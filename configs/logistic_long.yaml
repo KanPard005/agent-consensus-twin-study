@@ -1,0 +1,32 @@
+# Logistic twins: y ~ Bernoulli(sigmoid(scale * (<x^A,w^A> + <x^B,w^B>))); twins exchange
+# probabilities P(y = 1). Linear-style protocols only, long horizon, to check the population
+# limits (theory_logistic, Monte Carlo). sq_err is the Brier score; log loss is also recorded.
+experiment: logistic_long
+seed: 0
+n_runs: 10
+summary_tail: 0.1
+plot_window: 200
+
+env:
+  task: logistic
+  d_A: 3
+  d_B: 3
+  rho: 0.5
+  norm_A: 1.0
+  norm_B: 1.0
+  scale: 2.0
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+post:
+  T: 3000
+
+protocols:
+  - {name: no_talk, label: P0}
+  - {name: no_talk, label: LS, pool: logit_sum}
+  - {name: blend, label: P1, prior_var: 1.0}
+  - {name: exchange, label: P2, n_exchanges: 1, prior_scale: 1.0, msg_prior_var: 1.0}
+  - {name: exchange, label: P3, n_exchanges: 3, prior_scale: 1.0, msg_prior_var: 1.0, tol: 0.01}

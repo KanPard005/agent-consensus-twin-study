@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: consensus
+Version: 0.1.0
+Summary: Twin study: how agents with different information reach consensus
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.24
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+Provides-Extra: llm
+Requires-Dist: anthropic>=2.6; extra == "llm"

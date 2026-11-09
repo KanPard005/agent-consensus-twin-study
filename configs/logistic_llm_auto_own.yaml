@@ -1,0 +1,44 @@
+# Logistic twins (probabilities exchanged) with Haiku twins as in P8 (llm_haiku_auto_own.yaml): logistic model as tool, automatic logistic regression on own_model (+ partner_open), log loss.
+experiment: logistic_llm_auto_own
+seed: 0
+n_runs: 3
+summary_tail: 0.5   # average the last half of the steps (T is short)
+plot_window: 10
+
+env:
+  d_A: 3
+  d_B: 3
+  rho: 0.5
+  norm_A: 1.0
+  norm_B: 1.0
+  task: logistic
+  scale: 2.0
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+post:
+  T: 60
+
+protocols:
+  - {name: no_talk, label: P0}
+  - {name: no_talk, label: LS, pool: logit_sum}
+  - {name: blend, label: P1, prior_var: 1.0}
+  - {name: exchange, label: P2, n_exchanges: 1, prior_scale: 1.0, msg_prior_var: 1.0}
+  - {name: exchange, label: P3, n_exchanges: 3, prior_scale: 1.0, msg_prior_var: 1.0, tol: 0.01}
+  - name: llm_exchange
+    label: L8
+    n_exchanges: 1          # 2 rounds per step: open, then answer after seeing the partner
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}   # or kind: api (needs a key)
+    history_len: 10
+    max_chars: 300
+    notes_chars: 800
+    tell_twin: true
+    update_linear: false
+    show_partner_estimates: true
+    tools: true
+    max_tool_calls: 2
+    auto_regress: true

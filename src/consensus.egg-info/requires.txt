@@ -1,0 +1,10 @@
+numpy>=1.24
+matplotlib>=3.7
+pyyaml>=6.0
+
+[dev]
+pytest>=7
+ruff>=0.4
+
+[llm]
+anthropic>=2.6
