@@ -17,6 +17,7 @@ Population limits of each protocol are in `consensus.theory`.
 
 from __future__ import annotations
 
+import copy
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 
@@ -139,17 +140,19 @@ class NoTalk(Protocol):
     `pool="logit_sum"` (logistic task only) instead combines the two probabilities by adding
     their log-odds, sigmoid(logit p^A + logit p^B): the naive-Bayes pool, exact when the two
     feature blocks are independent and each solo model is calibrated with no prior log-odds.
+    `pool="product"` (regression task) multiplies the two solo predictions, p^A p^B: the right
+    rule for the product task (`data.ProductTwinEnv`) at rho = 0 with mu = 1.
     """
 
     name = "no_talk"
 
     def __init__(self, update_solo: bool = False, pool: str = "mean") -> None:
-        if pool not in ("mean", "logit_sum"):
-            raise ValueError(f"pool must be 'mean' or 'logit_sum', got {pool!r}")
+        if pool not in ("mean", "logit_sum", "product"):
+            raise ValueError(f"pool must be 'mean', 'logit_sum' or 'product', got {pool!r}")
         self.update_solo = update_solo
         self.pool = pool
-        if pool == "logit_sum":
-            self.name = "logit_sum"
+        if pool != "mean":
+            self.name = pool
 
     def setup(self, A: Agent, B: Agent) -> None:
         for agent in (A, B):
@@ -163,6 +166,10 @@ class NoTalk(Protocol):
             if not self.logistic:
                 raise ValueError("pool='logit_sum' needs the logistic task")
             cons = float(sigmoid(logit(p_A) + logit(p_B)))
+        elif self.pool == "product":
+            if self.logistic:
+                raise ValueError("pool='product' needs a regression task")
+            cons = p_A * p_B
         else:
             cons = (p_A + p_B) / 2
         rec = _errors(cons, p_A, p_B, y, p_A, p_B, self.logistic)
@@ -275,7 +282,15 @@ class LLMExchange(Protocol):
     **twin_kw
         Passed to `LLMTwin` (history_len, max_chars, notes_chars, tell_twin, update_linear,
         team_rule, show_partner_estimates, tools, max_tool_calls, auto_regress, memory,
-        show_own_messages, pooling_hint, learner, train_batch).
+        show_own_messages, pooling_hint, combine_hint, learner, train_batch, feature_names,
+        ask_interval, train_tool, train_tool_calls).
+    self_n_A, self_n_B : int, optional
+        `learner: self` only: the twin learns from the first `self_n` of its linear learner's
+        training samples (default all), and is told it studied that many cases. Nested subsets
+        of one training set, so twins with different n are paired on the same data.
+    self_offset_A, self_offset_B : int
+        `learner: self` only: start of the twin's slice of training samples, i.e. it studies
+        samples [offset, offset + self_n). Used to give two pairs disjoint training sets.
 
     With `learner: self` the twins first learn from their own training samples (the same ones
     their linear learners were trained on; `LLMTwin.train`, both twins in parallel), the batch
@@ -285,7 +300,25 @@ class LLMExchange(Protocol):
     never shown to the twins) for comparison.
     """
 
-    def __init__(self, backend: dict, n_exchanges: int = 1, tol: float = 1e-2, **twin_kw) -> None:
+    twin_cls = LLMTwin  # subclasses swap the twin, e.g. `consensus.worded.WordedExchange`
+
+    def __init__(
+        self,
+        backend: dict,
+        n_exchanges: int = 1,
+        tol: float = 1e-2,
+        self_n_A: int | None = None,
+        self_n_B: int | None = None,
+        self_offset_A: int = 0,
+        self_offset_B: int = 0,
+        **twin_kw,
+    ) -> None:
+        if (self_n_A or self_n_B or self_offset_A or self_offset_B) and twin_kw.get(
+            "learner", "linear"
+        ) != "self":
+            raise ValueError("self_n_* / self_offset_* need learner: self")
+        self.self_n = {"A": self_n_A, "B": self_n_B}
+        self.self_offset = {"A": self_offset_A, "B": self_offset_B}
         self.backend_cfg = backend
         self.E = n_exchanges
         self.tol = tol
@@ -297,8 +330,21 @@ class LLMExchange(Protocol):
         for agent in (A, B):
             agent.begin_communication(0, frozen=True)
         backend = build_backend(self.backend_cfg)
+        n_train = {}
+        for name, lin in (("A", A), ("B", B)):
+            n_all = lin.heads[0].n
+            off = self.self_offset[name]
+            n = self.self_n[name] or n_all - off
+            if off + n > n_all:
+                raise ValueError(
+                    f"self_offset_{name} + self_n_{name} = {off + n} exceeds the {n_all} "
+                    "training samples"
+                )
+            n_train[name] = n
         self.twins = {
-            name: LLMTwin(name, lin, backend, self.E + 1, self.T, lin.heads[0].n, **self.twin_kw)
+            name: self.twin_cls(
+                name, lin, backend, self.E + 1, self.T, n_train[name], **self.twin_kw
+            )
             for name, lin in (("A", A), ("B", B))
         }
         self.transcript = []
@@ -308,18 +354,36 @@ class LLMExchange(Protocol):
         self.training = {}
         self._train_cost = (0.0, 0.0, 0.0)
         if self.self_learn:
-            futs = {
-                name: self._pool.submit(tw.train, *lin.training_data())
-                for (name, tw), lin in zip(self.twins.items(), (A, B))
-            }
+            futs = {}
+            for (name, tw), lin in zip(self.twins.items(), (A, B)):
+                X, y_tr = lin.training_data()
+                off, n = self.self_offset[name], n_train[name]
+                futs[name] = self._pool.submit(tw.train, X[off : off + n], y_tr[off : off + n])
             logs = {name: f.result() for name, f in futs.items()}
-            reps = [rec.pop("reply") for log in logs.values() for rec in log]
+            reps = [
+                r
+                for log in logs.values()
+                for rec in log
+                for r in [rec.pop("reply"), *rec.pop("tool_replies", [])]
+            ]
             self.training = logs
             self._train_cost = (
                 sum(r.tokens_in for r in reps),
                 sum(r.tokens_out for r in reps),
                 sum(r.cost_usd for r in reps),
             )
+
+    def fork(self) -> LLMExchange:
+        """An independent copy of this pair in its current state (between steps), to continue
+        it along a different branch: twins forked (`LLMTwin.fork`), transcript copied, own thread
+        pool. The learning-phase cost stays with the original."""
+        new = copy.copy(self)
+        new.twins = {k: tw.fork() for k, tw in self.twins.items()}
+        new.transcript = list(self.transcript)
+        new._pool = ThreadPoolExecutor(max_workers=2)
+        new._train_cost = (0.0, 0.0, 0.0)
+        new.conversations = {}
+        return new
 
     def step(self, A, B, x_A, x_B, y):
         tA, tB = self.twins["A"], self.twins["B"]
@@ -364,6 +428,11 @@ class LLMExchange(Protocol):
                             "notes": rd[k].notes,
                             "ok": rd[k].ok,
                             "tool_calls": rd[k].tool_calls,
+                            **(
+                                {"interval": list(rd[k].interval)}
+                                if rd[k].interval is not None
+                                else {}
+                            ),
                         }
                         for k in ("A", "B")
                     }
@@ -395,6 +464,97 @@ class LLMExchange(Protocol):
         return rec
 
 
+class SwitchExchange(Protocol):
+    """Partner switch: two LLM pairs, and partway through, the B twins change pairs.
+
+    Pairs 1 = (A1, B1) and 2 = (A2, B2) are `LLMExchange` pairs on the same stream; with
+    `learner: self` and `pair_n`, pair k studies training samples [k n, (k + 1) n), so the two
+    pairs grow up on disjoint data and their partners really differ. At step `switch_at` both
+    pairs are forked (`LLMExchange.fork`):
+
+    - streams p1, p2 continue unchanged (the control);
+    - streams s1 = (A1, B2) and s2 = (A2, B1) continue with swapped partners. Each twin keeps its
+      feature block, notes and history; nothing tells it that the partner changed.
+
+    So s and p share the steps before `switch_at` and then differ only by the switch, which
+    pairs the comparison run by run. The main METRICS are the mean over the two pairs' streams
+    (p1, p2 before the switch, s1, s2 after it), the control's are prefixed `ctrl_`, and the
+    per-stream ones `p1_`, `p2_`, `s1_`, `s2_` (nan where the stream does not exist yet); LLM
+    usage totals are summed over all streams. The transcript has one record per stream and step
+    (`stream` key; s1/s2 start at `switch_at`) and `training` holds the four twins' notes
+    (A1, B1, A2, B2).
+    """
+
+    USAGE = ("parse_fail", "tokens_in", "tokens_out", "cost_usd", "tool_calls")
+
+    def __init__(self, switch_at: int, pair_n: int | None = None, **llm_kw) -> None:
+        self.switch_at = switch_at
+        self.pair_n = pair_n
+        self.llm_kw = llm_kw
+        self.name = "llm_switch"
+        self.transcript: list[dict] = []
+
+    def setup(self, A: Agent, B: Agent) -> None:
+        if not 0 < self.switch_at < self.T:
+            raise ValueError(f"switch_at must be in (0, T={self.T}), got {self.switch_at}")
+        self_learn = self.llm_kw.get("learner", "linear") == "self"
+        self.pairs = {}
+        for k in range(2):
+            extra = {}
+            if self_learn and self.pair_n:
+                off = k * self.pair_n
+                extra = dict(
+                    self_n_A=self.pair_n,
+                    self_n_B=self.pair_n,
+                    self_offset_A=off,
+                    self_offset_B=off,
+                )
+            eng = LLMExchange(**{**self.llm_kw, **extra})
+            eng.T, eng.logistic = self.T, self.logistic
+            self.pairs[f"p{k + 1}"] = eng
+        self._pool = ThreadPoolExecutor(max_workers=4)
+        futs = [self._pool.submit(e.setup, A.clone(), B.clone()) for e in self.pairs.values()]
+        for f in futs:
+            f.result()
+        self.training = {
+            f"{twin}{key[1]}": batches
+            for key, eng in self.pairs.items()
+            for twin, batches in eng.training.items()
+        }
+        self.streams = dict(self.pairs)  # stream name -> pair; s1/s2 are added at the switch
+        self.transcript = []
+        self.conversations = {}
+
+    def _switch(self) -> None:
+        s1, s2 = self.pairs["p1"].fork(), self.pairs["p2"].fork()
+        s1.twins["B"], s2.twins["B"] = s2.twins["B"], s1.twins["B"]
+        self.streams.update(s1=s1, s2=s2)
+
+    def step(self, A, B, x_A, x_B, y):
+        if self.t == self.switch_at:
+            self._switch()
+        futs = {}
+        for name, eng in self.streams.items():
+            eng.t = self.t
+            futs[name] = self._pool.submit(eng.step, A, B, x_A, x_B, y)
+        recs = {name: f.result() for name, f in futs.items()}
+        main = ("s1", "s2") if self.t >= self.switch_at else ("p1", "p2")
+        out = {}
+        for k in recs["p1"]:
+            for name in ("p1", "p2", "s1", "s2"):
+                out[f"{name}_{k}"] = recs[name][k] if name in recs else np.nan
+            if k in self.USAGE:
+                out[k] = float(sum(rec[k] for rec in recs.values()))
+            else:
+                out[k] = float(np.mean([recs[n][k] for n in main]))
+                out[f"ctrl_{k}"] = float(np.mean([recs["p1"][k], recs["p2"][k]]))
+        for name, eng in self.streams.items():
+            self.transcript.append({"stream": name, **eng.transcript[-1]})
+        if self.t == self.T - 1:
+            self._pool.shutdown()
+        return out
+
+
 def build_protocol(cfg: dict) -> Protocol:
     """Construct a protocol from a config entry like {name: exchange, n_exchanges: 3, ...}."""
     cfg = dict(cfg)
@@ -405,7 +565,12 @@ def build_protocol(cfg: dict) -> Protocol:
         "blend": FrozenBlend,
         "exchange": Exchange,
         "llm_exchange": LLMExchange,
+        "llm_switch": SwitchExchange,
     }
+    if name == "llm_worded":  # imported here: consensus.worded imports this module
+        from consensus.worded import WordedExchange
+
+        registry[name] = WordedExchange
     if name not in registry:
         raise ValueError(f"Unknown protocol {name!r}; choose from {sorted(registry)}")
     return registry[name](**cfg)

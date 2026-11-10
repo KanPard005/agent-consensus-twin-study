@@ -1,0 +1,49 @@
+# Product task with a learning phase first: as llm_haiku_product_online.yaml, but each twin first
+# studies 200 of its own cases (S1n-style, batches of 25), so it should know its own factor
+# g = 1 + <x, w> before talking. Then the same online communication phase (T = 80). The test is
+# whether the twins learn to multiply their opinions (they are not told). Same seed and env.
+#   P0 : linear twins (with intercept) trained on the same 200 cases, updating online, averaged
+#   PX : the same, multiplied (the right rule)
+#   S  : self-learning Haiku twins, 200 cases each, then online talk
+experiment: llm_haiku_product_trained
+seed: 0
+n_runs: 4
+summary_tail: 0.5
+plot_window: 10
+
+env:
+  task: product
+  mu: 1.0
+  d_A: 3
+  d_B: 3
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+  intercept: true
+
+post:
+  T: 80
+
+protocols:
+  - {name: no_talk, label: P0, update_solo: true}
+  - {name: no_talk, label: PX, update_solo: true, pool: product}
+  - name: llm_exchange
+    label: S
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 80
+    history_features: true
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct

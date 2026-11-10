@@ -1,0 +1,49 @@
+# Switching twins (LogBook note 2026-11-09): two pairs of self-learning twins (S1n setup:
+# distinct feature names, told they are twins), and at step 20 the B twins change pairs,
+# unannounced. Does performance or deference change at the switch, i.e. did the pairs build
+# anything specific to their partner (trust, conventions)?
+#
+# Pair 1 studies training cases 0-199 and pair 2 cases 200-399 (pair_n = 200), so the partners
+# grew up on different data. At the switch both pairs are forked: p1, p2 continue unchanged (the
+# control), s1 = (A1, B2) and s2 = (A2, B1) continue with swapped partners, on the same stream.
+# Deference rose over the first 15 steps in the entrenchment runs (WOA 0.16 -> 0.29), so the
+# switch comes after 20 steps.
+experiment: llm_haiku_switch
+seed: 0
+n_runs: 6
+summary_tail: 0.5
+plot_window: 5
+
+env:
+  d_A: 3
+  d_B: 3
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+post:
+  T: 40
+
+protocols:
+  - {name: no_talk, label: P0}
+  - name: llm_switch
+    label: SW
+    switch_at: 20
+    pair_n: 200
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct

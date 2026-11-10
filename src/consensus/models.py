@@ -101,10 +101,14 @@ class LinearAgent(Agent):
         "A" or "B", for logging.
     """
 
-    def __init__(self, d: int, lam: float = 1.0, name: str = "") -> None:
+    def __init__(self, d: int, lam: float = 1.0, name: str = "", intercept: bool = False) -> None:
         self.d = d
         self.name = name
-        self.heads: dict[int, OnlineRidge] = {0: OnlineRidge(d, lam)}
+        # With `intercept`, a constant 1 is prepended to x (needed when E[y] != 0, e.g. the
+        # product task); the "own block" of every head is then (intercept, x), of size p = d + 1.
+        self.intercept = intercept
+        self.p = d + int(intercept)
+        self.heads: dict[int, OnlineRidge] = {0: OnlineRidge(self.p, lam)}
         self.frozen: set[int] = set()
         self.theta_trained: np.ndarray | None = None
         # Training samples (x, y), kept so other learners (e.g. a self-learning LLM twin) can be
@@ -112,7 +116,8 @@ class LinearAgent(Agent):
         self._train: list[tuple[np.ndarray, float]] = []
 
     def _features(self, x: np.ndarray, messages: Sequence[float]) -> np.ndarray:
-        return np.concatenate([x, np.asarray(messages, float)])
+        const = [1.0] if self.intercept else []
+        return np.concatenate([const, x, np.asarray(messages, float)])
 
     def predict(self, x: np.ndarray, messages: Sequence[float]) -> float:
         return self.heads[len(messages)].predict(self._features(x, messages))
@@ -151,10 +156,10 @@ class LinearAgent(Agent):
         self.theta_trained = h0.theta.copy()
         for k in range(1, max_messages + 1):
             theta = np.concatenate([h0.theta, np.zeros(k)])
-            P = np.zeros((self.d + k, self.d + k))
-            P[: self.d, : self.d] = prior_scale * h0.P
-            P[self.d :, self.d :] = msg_prior_var * np.eye(k)
-            self.heads[k] = OnlineRidge(self.d + k, theta=theta, P=P)
+            P = np.zeros((self.p + k, self.p + k))
+            P[: self.p, : self.p] = prior_scale * h0.P
+            P[self.p :, self.p :] = msg_prior_var * np.eye(k)
+            self.heads[k] = OnlineRidge(self.p + k, theta=theta, P=P)
         self.frozen = set(self.heads) if frozen else ({0} if not update_solo else set())
 
     def training_data(self) -> tuple[np.ndarray, np.ndarray]:
@@ -162,12 +167,12 @@ class LinearAgent(Agent):
         return np.array([z for z, _ in self._train]), np.array([v for _, v in self._train])
 
     def own_weights(self, k: int) -> np.ndarray:
-        """Coefficients on own features x in head k, shape (d,)."""
-        return self.heads[k].theta[: self.d].copy()
+        """Coefficients on own features x in head k (with the intercept first if any), shape (p,)."""
+        return self.heads[k].theta[: self.p].copy()
 
     def message_weights(self, k: int) -> np.ndarray:
         """Coefficients on the partner's messages in head k, shape (k,)."""
-        return self.heads[k].theta[self.d :].copy()
+        return self.heads[k].theta[self.p :].copy()
 
     def drift(self, k: int) -> float:
         """||own weights of head k - trained solo weights||_2."""

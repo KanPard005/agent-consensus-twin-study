@@ -142,11 +142,45 @@ class LogisticTwinEnv(LinearTwinEnv):
         return cls(lin.w_A, lin.w_B, lin.Sigma, lin.sigma, scale=cfg.get("scale", 1.0))
 
 
+@dataclass
+class ProductTwinEnv(LinearTwinEnv):
+    """Multiplicative variant: the two blocks' signals multiply instead of adding,
+
+        y = g_A * g_B + eps,   g_A = mu + <x^A, w^A>,   g_B = mu + <x^B, w^B>,   eps ~ N(0, sigma^2).
+
+    At rho = 0 each twin's best solo prediction is E[y | x^A] = mu * g_A (since E[g_B] = mu), and
+    the full-information prediction is g_A * g_B = (mu g_A)(mu g_B) / mu^2. With the default
+    mu = 1 the best team rule is therefore exactly the product of the two solo predictions, while
+    averaging or adding them leaves the interaction <x^A, w^A><x^B, w^B> unexplained (variance
+    |w^A|^2 |w^B|^2 at rho = 0). Features and weights are as in `LinearTwinEnv`.
+    """
+
+    mu: float = 1.0
+
+    def true_mean(self, x_A: np.ndarray, x_B: np.ndarray) -> np.ndarray:
+        """E[y | x^A, x^B] = g_A g_B, shape (n,)."""
+        return (self.mu + x_A @ self.w_A) * (self.mu + x_B @ self.w_B)
+
+    def sample(self, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x = rng.standard_normal((n, self.d_A + self.d_B)) @ self._L.T
+        x_A, x_B = x[:, : self.d_A], x[:, self.d_A :]
+        y = self.true_mean(x_A, x_B) + self.sigma * rng.standard_normal(n)
+        return x_A, x_B, y
+
+    @classmethod
+    def from_config(cls, cfg: dict, rng: np.random.Generator) -> "ProductTwinEnv":
+        lin = LinearTwinEnv.from_config(cfg, rng)
+        return cls(lin.w_A, lin.w_B, lin.Sigma, lin.sigma, mu=cfg.get("mu", 1.0))
+
+
 def build_env(cfg: dict, rng: np.random.Generator) -> LinearTwinEnv:
-    """Environment from the `env` config block; `task: logistic` gives binary labels."""
+    """Environment from the `env` config block; `task: logistic` gives binary labels and
+    `task: product` multiplies the two blocks' signals (`ProductTwinEnv`)."""
     task = cfg.get("task", "regression")
     if task == "regression":
         return LinearTwinEnv.from_config(cfg, rng)
     if task == "logistic":
         return LogisticTwinEnv.from_config(cfg, rng)
-    raise ValueError(f"unknown task {task!r}; choose 'regression' or 'logistic'")
+    if task == "product":
+        return ProductTwinEnv.from_config(cfg, rng)
+    raise ValueError(f"unknown task {task!r}; choose 'regression', 'logistic' or 'product'")

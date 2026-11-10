@@ -1,0 +1,57 @@
+# Idea 2 (LogBook note 2026-11-09): entrenchment. Do self-learning twins defer less to their
+# partner the more cases they have studied? S1n setup (distinct feature names, told they are
+# twins) with a stated 80% interval on every estimate, at rho = 0.
+#
+# Each arm runs its own learning phase on the first n of the same 400 training cases per twin
+# (nested, so the arms are paired), so a twin with n = 25 believes its training is complete.
+#   E25, E100, E400 : both twins study 25 / 100 / 400 cases
+#   E25v400         : A studies 25, B studies 400 (A should defer more than B)
+# Normative reference at rho = 0 with symmetric n: the optimal blend weights tend to (1, 1) as n
+# grows, so weight on the partner should not fall with n; and the spread of y given one block
+# is sqrt(1 + 0.25) = 1.12 whatever n is, so an honest 80% interval stays about +-1.4 wide.
+# The communication phase is short (T = 15) because each revealed y is another training case.
+# Run one arm per process: --set only=[E25] experiment=llm_haiku_entrench_E25
+experiment: llm_haiku_entrench
+seed: 0
+n_runs: 8
+summary_tail: 1.0
+plot_window: 5
+
+env:
+  d_A: 3
+  d_B: 3
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+post:
+  T: 15
+
+protocols:
+  - {name: no_talk, label: P0}
+  - &self
+    name: llm_exchange
+    label: E25
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
+    ask_interval: true
+    self_n_A: 25
+    self_n_B: 25
+  - {<<: *self, label: E100, self_n_A: 100, self_n_B: 100}
+  - {<<: *self, label: E400, self_n_A: 400, self_n_B: 400}
+  - {<<: *self, label: E25v400, self_n_A: 25, self_n_B: 400}

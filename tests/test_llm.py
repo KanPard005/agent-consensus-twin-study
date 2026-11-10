@@ -362,3 +362,172 @@ def test_self_learning_twins(monkeypatch):
     np.testing.assert_allclose(out["shift_A"], [1.0, 0.0, 1.0])  # (final - round 1)^2
     assert proto.transcript[1]["rounds"][1]["A"]["estimate"] == 1.0  # fallback
     assert "linear_ref" in proto.transcript[0]
+
+
+def test_distinct_feature_names(monkeypatch):
+    """feature_names='distinct': A's features are a1..a3 and B's b1..b3 in the training cases, the
+    system prompt and the per-step prompt; with tell_twin=False the twin line is dropped but the
+    feature line stays. The default keeps x1..x3 and adds no feature line."""
+    seen = {"train": [], "systems": set(), "rounds": []}
+
+    def fn(system, user, schema):
+        if "learning phase" in system:
+            seen["train"].append((system, user))
+            return {"notes": "rule"}
+        seen["systems"].add(system)
+        seen["rounds"].append(user)
+        return {"message": "hi", "estimate": 0.5, "notes": "n"}
+
+    backend = StubBackend(fn)
+    monkeypatch.setattr(protocols, "build_backend", lambda cfg: backend)
+    env, A, B = make_twins(n=30)
+    xA, xB, y = env.sample(2, np.random.default_rng(1))
+    kw = dict(backend={}, n_exchanges=1, learner="self", train_batch=25, show_partner_estimates=True)
+    proto = LLMExchange(feature_names="distinct", tell_twin=False, **kw)
+    proto.run(A.clone(), B.clone(), xA, xB, y)
+    sysA, sysB = proto.twins["A"].system, proto.twins["B"].system
+    assert "Your features are called a1..a3; your partner's features are called b1, b2 and so on." in sysA
+    assert "Your features are called b1..b2; your partner's features are called a1, a2 and so on." in sysB
+    assert "another instance of the same AI model" not in sysA  # tell_twin=False
+    assert any("Cases (a1, a2, a3 | y)" in u and "from a1..a3" in s_ for s_, u in seen["train"])
+    assert any("Cases (b1, b2 | y)" in u for _, u in seen["train"])
+    assert any("Your features: a1=" in u for u in seen["rounds"])
+    assert any("Your features: b1=" in u for u in seen["rounds"])
+    assert not any("x1" in u for u in seen["rounds"])
+
+    proto = LLMExchange(**kw)  # defaults
+    proto.run(A.clone(), B.clone(), xA, xB, y)
+    assert "Your features are called" not in proto.twins["A"].system
+    assert "another instance of the same AI model" in proto.twins["A"].system
+    assert any("Cases (x1, x2, x3 | y)" in u for _, u in seen["train"])
+
+    with pytest.raises(ValueError):
+        LLMExchange(feature_names="other", **kw).run(A.clone(), B.clone(), xA, xB, y)
+
+
+def test_self_n_and_intervals(monkeypatch):
+    """self_n_A / self_n_B: each self-learning twin studies only the first n of its training
+    samples and is told so; ask_interval adds low/high to the schema, stores the (sorted)
+    interval in the transcript, and an unusable interval is dropped without failing the reply."""
+    seen = {"train": {"A": [], "B": []}, "schemas": []}
+
+    def fn(system, user, schema):
+        if "learning phase" in system:
+            name = "A" if "agent A" in system else "B"
+            seen["train"][name].append(user.count(" | ") - 1)  # case rows (minus header)
+            return {"notes": "rule"}
+        seen["schemas"].append(schema)
+        if "Step 2 " in user:
+            return {"message": "m", "estimate": 0.5, "low": "x", "high": 1.0, "notes": "n"}
+        return {"message": "m", "estimate": 0.5, "low": 2.0, "high": -1.0, "notes": "n"}
+
+    backend = StubBackend(fn)
+    monkeypatch.setattr(protocols, "build_backend", lambda cfg: backend)
+    env, A, B = make_twins(n=60)
+    xA, xB, y = env.sample(2, np.random.default_rng(2))
+    proto = LLMExchange(
+        backend={}, n_exchanges=1, learner="self", train_batch=25, feature_names="distinct",
+        ask_interval=True, self_n_A=25, self_n_B=60,
+    )
+    proto.run(A.clone(), B.clone(), xA, xB, y)
+    assert seen["train"]["A"] == [25] and seen["train"]["B"] == [25, 25, 10]
+    assert "you studied 25 earlier cases" in proto.twins["A"].system
+    assert "you studied 60 earlier cases" in proto.twins["B"].system
+    assert "80% interval" in proto.twins["A"].system
+    assert {"low", "high"} <= set(seen["schemas"][0]["required"])
+    assert proto.transcript[0]["rounds"][0]["A"]["interval"] == [-1.0, 2.0]  # sorted
+    assert "interval" not in proto.transcript[1]["rounds"][0]["A"]  # unusable -> dropped
+    assert proto.transcript[1]["rounds"][0]["A"]["ok"]  # estimate still used
+
+    with pytest.raises(ValueError):
+        LLMExchange(backend={}, self_n_A=10)  # needs learner: self
+    with pytest.raises(ValueError):  # more cases than the linear learner was trained on
+        LLMExchange(backend={}, learner="self", self_n_A=61).run(A.clone(), B.clone(), xA, xB, y)
+
+
+def test_switch_exchange(monkeypatch):
+    """SwitchExchange: the two pairs study disjoint training slices; at switch_at the forks swap
+    their B twins (s1 = A1 + B2, s2 = A2 + B1) while p1/p2 continue unchanged, and both branches
+    keep the twins' pre-switch history; metrics and transcripts are per stream."""
+    train_first = {}
+
+    def fn(system, user, schema):
+        if "learning phase" in system:
+            name = "A" if "agent A" in system else "B"
+            first = user.split("Cases (")[1].splitlines()[1]  # first case row: identifies slice
+            train_first.setdefault(name, set()).add(first)
+            return {"notes": f"{name}:{first}"}  # notes tag the twin (agent + slice)
+        notes = user.split("Your notes: ")[1].splitlines()[0]
+        return {"message": "m", "estimate": 1.0, "notes": notes}  # keep the tag
+
+    backend = StubBackend(fn)
+    monkeypatch.setattr(protocols, "build_backend", lambda cfg: backend)
+    env, A, B = make_twins(n=60)
+    xA, xB, y = env.sample(6, np.random.default_rng(3))
+    proto = protocols.build_protocol(
+        dict(
+            name="llm_switch", switch_at=3, pair_n=30, backend={}, n_exchanges=1,
+            learner="self", train_batch=30, feature_names="distinct",
+        )
+    )
+    out = proto.run(A.clone(), B.clone(), xA, xB, y)
+    assert len(train_first["A"]) == 2 and len(train_first["B"]) == 2  # disjoint slices
+    p1A, p1B = proto.pairs["p1"].twins["A"].notes, proto.pairs["p1"].twins["B"].notes
+    p2A, p2B = proto.pairs["p2"].twins["A"].notes, proto.pairs["p2"].twins["B"].notes
+    assert len({p1A, p1B, p2A, p2B}) == 4
+    s1, s2 = proto.streams["s1"], proto.streams["s2"]
+    assert (s1.twins["A"].notes, s1.twins["B"].notes) == (p1A, p2B)
+    assert (s2.twins["A"].notes, s2.twins["B"].notes) == (p2A, p1B)
+    assert len(s1.twins["A"].history) == 6  # 3 shared steps + 3 after the switch
+    assert s1.twins["A"] is not proto.pairs["p1"].twins["A"]
+    streams = [r["stream"] for r in proto.transcript]
+    assert streams.count("p1") == 6 and streams.count("s1") == 3
+    assert np.isnan(out["s1_sq_err"][:3]).all() and np.isfinite(out["s1_sq_err"][3:]).all()
+    np.testing.assert_allclose(out["sq_err"][3:], (out["s1_sq_err"] + out["s2_sq_err"])[3:] / 2)
+    np.testing.assert_allclose(out["ctrl_sq_err"], (out["p1_sq_err"] + out["p2_sq_err"]) / 2)
+    assert set(proto.training) == {"A1", "B1", "A2", "B2"}
+
+
+def test_train_tool(monkeypatch):
+    """train_tool: in the learning phase a reply with `regress` is a tool call fitted over every
+    case shown so far (25 after batch 1, 50 after batch 2); at most train_tool_calls per batch,
+    after which the twin must answer; tool replies count towards the cost; no tool by default."""
+    calls = {"n": 0}
+    users = []
+
+    def fn(system, user, schema):
+        if "learning phase" in system:
+            users.append(user)
+            if "regress" in schema["properties"] and "No tool calls left" not in user:
+                calls["n"] += 1
+                f = "a" if "agent A" in system else "b"
+                return {"notes": "ignored", "regress": [f"{f}1", f"{f}2"]}
+            return {"notes": "a1 rule", "regress": []}
+        return {"message": "m", "estimate": 0.0, "notes": "n"}
+
+    backend = StubBackend(fn)
+    monkeypatch.setattr(protocols, "build_backend", lambda cfg: backend)
+    env, A, B = make_twins(n=50)
+    xA, xB, y = env.sample(1, np.random.default_rng(4))
+    proto = LLMExchange(
+        backend={}, n_exchanges=1, learner="self", train_batch=25, feature_names="distinct",
+        train_tool=True, train_tool_calls=2,
+    )
+    proto.run(A.clone(), B.clone(), xA, xB, y)
+    log = proto.training["A"]
+    assert [len(r["tool_calls"]) for r in log] == [2, 2]  # capped at 2 per batch
+    assert "over 25 cases studied so far" in log[0]["tool_calls"][0]["result"]
+    assert "over 50 cases studied so far" in log[1]["tool_calls"][0]["result"]
+    assert "No prediction" not in log[0]["tool_calls"][0]["result"]
+    assert all(r["notes"] == "a1 rule" for r in log)  # tool-call notes are ignored
+    assert any("No tool calls left for this batch" in u for u in users)
+    assert "regression tool" not in proto.twins["A"].system  # no tool in the communication phase
+    assert calls["n"] == 2 * 2 * 2  # 2 twins x 2 batches x 2 tool calls
+
+    users.clear()
+    LLMExchange(backend={}, n_exchanges=1, learner="self", train_batch=25).run(
+        A.clone(), B.clone(), xA, xB, y
+    )
+    assert not any("Tool call" in u for u in users)  # default: no tool
+    with pytest.raises(ValueError):
+        LLMExchange(backend={}, train_tool=True).run(A.clone(), B.clone(), xA, xB, y)

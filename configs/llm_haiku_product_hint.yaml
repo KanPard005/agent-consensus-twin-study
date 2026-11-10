@@ -1,0 +1,52 @@
+# Product task, hint arm: as llm_haiku_product_trained.yaml (200 study cases each, then T = 80 of
+# online talk), but the communication-phase prompt adds HINT_INTERACT: the twins' information may
+# interact, so the best combination need not be a sum or average. It does not name the rule
+# (multiply). Tests whether the twins failed to multiply because they never considered a
+# non-additive rule. The team rule is still the average of the final estimates (as before; giving
+# both the product makes the average the product). Same seed, env and training cases.
+#   P0 : linear twins (with intercept) updating online, averaged
+#   PX : the same, multiplied (the right rule)
+#   H  : self-learning Haiku twins with the interaction hint
+experiment: llm_haiku_product_hint
+seed: 0
+n_runs: 4
+summary_tail: 0.5
+plot_window: 10
+
+env:
+  task: product
+  mu: 1.0
+  d_A: 3
+  d_B: 3
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+  intercept: true
+
+post:
+  T: 80
+
+protocols:
+  - {name: no_talk, label: P0, update_solo: true}
+  - {name: no_talk, label: PX, update_solo: true, pool: product}
+  - name: llm_exchange
+    label: H
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 80
+    history_features: true
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
+    combine_hint: interact

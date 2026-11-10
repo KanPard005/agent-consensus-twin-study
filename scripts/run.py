@@ -19,11 +19,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from consensus.data import LinearTwinEnv, LogisticTwinEnv, build_env  # noqa: E402
+from consensus.data import LinearTwinEnv, LogisticTwinEnv, ProductTwinEnv, build_env  # noqa: E402
 from consensus.models import LinearAgent, LogisticAgent  # noqa: E402
 from consensus.protocols import Exchange, build_protocol  # noqa: E402
 from consensus.theory import protocol_benchmarks  # noqa: E402
 from consensus.theory_logistic import logistic_benchmarks  # noqa: E402
+from consensus.theory_product import product_benchmarks  # noqa: E402
 from consensus.utils import (  # noqa: E402
     git_hash,
     load_config,
@@ -40,11 +41,17 @@ def train_twins(env: LinearTwinEnv, cfg: dict, rng: np.random.Generator):
     """Training phase: each twin fits its own iid stream (x^(i)_t, y_t).
 
     Online ridge for the regression task; logistic regression (MAP, ridge prior) for the
-    logistic task.
+    logistic task. `intercept: true` (regression only) adds a constant feature, needed when
+    E[y] != 0 (the product task). With n_A = n_B = 0 the twins start untrained.
     """
-    cls = LogisticAgent if isinstance(env, LogisticTwinEnv) else LinearAgent
-    A = cls(env.d_A, cfg["lam"], "A")
-    B = cls(env.d_B, cfg["lam"], "B")
+    if isinstance(env, LogisticTwinEnv):
+        if cfg.get("intercept"):
+            raise ValueError("train.intercept is only supported for regression tasks")
+        A = LogisticAgent(env.d_A, cfg["lam"], "A")
+        B = LogisticAgent(env.d_B, cfg["lam"], "B")
+    else:
+        A = LinearAgent(env.d_A, cfg["lam"], "A", intercept=cfg.get("intercept", False))
+        B = LinearAgent(env.d_B, cfg["lam"], "B", intercept=cfg.get("intercept", False))
     x_A, _, y_A = env.sample(cfg["n_A"], rng)
     _, x_B, y_B = env.sample(cfg["n_B"], rng)
     for t in range(cfg["n_A"]):
@@ -66,7 +73,7 @@ def summarize(results: dict, bench: dict, proto_keys: dict, tail: float = 0.1) -
         T = res["sq_err"].shape[1]
         sl = slice(int((1 - tail) * T), T)
         key = proto_keys[label]
-        frozen = 0.0 if key in ("no_talk", "logit_sum", "blend") else np.nan
+        frozen = 0.0 if key in ("no_talk", "logit_sum", "product", "blend") else np.nan
         out[label] = {
             "protocol": key,
             "excess_mse_tail": float(res["sq_err"][:, sl].mean() - bench["full_info"]),
@@ -114,6 +121,10 @@ def main(argv: list[str] | None = None) -> Path:
 
     cfg = load_config(args.config, args.set)
     seed = cfg["seed"]
+    if cfg.get("only"):  # run only these protocol labels, e.g. --set only=[P0,E25]
+        cfg["protocols"] = [pc for pc in cfg["protocols"] if pc.get("label") in cfg["only"]]
+        if not cfg["protocols"]:
+            raise ValueError(f"no protocol labelled {cfg['only']}")
     # The environment (true weights) is fixed across runs so population limits are comparable.
     env = build_env(cfg["env"], np.random.default_rng(seed))
     protocols = [build_protocol(pc) for pc in cfg["protocols"]]
@@ -122,6 +133,8 @@ def main(argv: list[str] | None = None) -> Path:
     max_E = max([proto.E for proto in protocols if isinstance(proto, Exchange)] or [1])
     if isinstance(env, LogisticTwinEnv):  # Brier scores (+ logloss_*), by Monte Carlo
         bench = logistic_benchmarks(env, n_exchanges=max_E)
+    elif isinstance(env, ProductTwinEnv):  # Monte Carlo; no closed form for the exchanges
+        bench = product_benchmarks(env)
     else:
         bench = protocol_benchmarks(env.Sigma, env.w, env.d_A, env.sigma, n_exchanges=max_E)
     log.info("population benchmarks: %s", {k: round(v, 4) for k, v in bench.items()})

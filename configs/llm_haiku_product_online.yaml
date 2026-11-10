@@ -1,0 +1,50 @@
+# Product task, online from the start: y = (1 + <x^A, w^A>)(1 + <x^B, w^B>) + eps, rho = 0.
+# The best team rule is the product of the two twins' solo predictions (data.ProductTwinEnv);
+# averaging leaves excess 1.5 and the best additive rule 1.0 (theory_product). The twins are not
+# told the rule. There is no learning phase: both self-learning twins start with no cases and no
+# model, talk from step 1, and learn their own rule and the combination from the revealed y.
+#   P0 : online linear twins (with intercept), averaged
+#   PX : the same twins, predictions multiplied (the right rule)
+#   O  : self-learning Haiku twins, online (distinct feature names, told they are twins), with
+#        their own features in the history table and the whole history shown
+experiment: llm_haiku_product_online
+seed: 0
+n_runs: 4
+summary_tail: 0.5
+plot_window: 10
+
+env:
+  task: product
+  mu: 1.0
+  d_A: 3
+  d_B: 3
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 0
+  n_B: 0
+  lam: 1.0
+  intercept: true
+
+post:
+  T: 80
+
+protocols:
+  - {name: no_talk, label: P0, update_solo: true}
+  - {name: no_talk, label: PX, update_solo: true, pool: product}
+  - name: llm_exchange
+    label: O
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    history_len: 80
+    history_features: true
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
