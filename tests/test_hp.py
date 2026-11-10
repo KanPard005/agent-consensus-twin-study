@@ -115,3 +115,43 @@ def test_unusable_reply_keeps_previous(monkeypatch):
     m = proto.run(cases)
     assert proto.transcript[0]["rounds"][1]["A"]["probs"] == [0.0, 0.0, 1.0]
     assert m["parse_fail"][0] == 2
+
+
+def test_facts_first(monkeypatch):
+    """Round 1 asks for a message only (no probabilities); the partner sees it without
+    probabilities; first reads and deference are taken from round 2."""
+    gen = HiddenProfileGenerator()
+    cases = gen.sample_set(np.random.default_rng(5), n_hidden=1, n_control=0)
+    seen = []
+
+    def fn(system, user, schema):
+        seen.append((system, user, schema))
+        name = "A" if "agent A" in system else "B"
+        if "site_1" not in schema["properties"]:
+            return {"message": f"{name} facts", "notes": "n"}
+        rnd = int(user.split("round ")[1].split(" ")[0])
+        if rnd == 2:
+            p = [0.7, 0.2, 0.1] if name == "A" else [0.2, 0.7, 0.1]
+        else:
+            p = [0.3, 0.6, 0.1] if name == "A" else [0.2, 0.7, 0.1]
+        return {
+            "message": f"{name} r{rnd}",
+            "site_1": p[0],
+            "site_2": p[1],
+            "site_3": p[2],
+            "notes": "n",
+        }
+
+    monkeypatch.setattr(hp_protocol, "build_backend", lambda cfg: StubBackend(fn))
+    proto = HPDiscussion(backend={}, n_exchanges=2, facts_first=True)
+    m = proto.run(cases)
+    r1 = [(s, u, sc) for s, u, sc in seen if "round 1 of" in u]
+    assert all(set(sc["properties"]) == {"message", "notes"} for _, _, sc in r1)
+    assert all("facts-only round" in u for _, u, _ in r1)
+    assert "Round 1 is for facts only" in proto.twins["A"].system
+    userA2 = [u for s, u, _ in seen if "agent A" in s and "round 2 of" in u][0]
+    assert 'round 1: "B facts"' in userA2
+    assert proto.transcript[0]["rounds"][0]["A"]["probs"] is None
+    np.testing.assert_allclose(m["defer_A"], [0.4])
+    np.testing.assert_allclose(m["defer_B"], [0.0])
+    assert m["parse_fail"][0] == 0

@@ -6,10 +6,11 @@ object for the runner to save. Metrics per case (arrays of length T):
 
 - correct: the (team) pick is the pooled best site.
 - logscore: log of the (team) probability on the best site, floored at 0.01.
-- r1_correct_A / r1_correct_B: the twin's round-1 favourite is the best site (before talking).
+- r1_correct_A / r1_correct_B: the twin's first-read favourite is the best site. The first read
+  is round 1, before talking; with `facts_first` it is round 2, after the facts-only round.
 - agree: the twins' final favourites are the same site.
-- defer_A / defer_B: change from round 1 to the final round in the twin's probability on the
-  partner's round-1 favourite, when their round-1 favourites differ (NaN otherwise). This is the
+- defer_A / defer_B: change from the first read to the final round in the twin's probability on
+  the partner's first-read favourite, when their first-read favourites differ (NaN otherwise). This is the
   verbal-task analogue of the weight of advice.
 """
 
@@ -52,7 +53,8 @@ class HPDiscussion:
     n_exchanges : int
         Rounds after the first.
     **twin_kw
-        Passed to `HPTwin` (max_chars, notes_chars, history_len, tell_split, tell_twin).
+        Passed to `HPTwin` (max_chars, notes_chars, history_len, tell_split, tell_twin,
+        facts_first). With facts_first the first of the n_exchanges + 1 rounds is facts only.
     """
 
     name = "hp_talk"
@@ -66,6 +68,7 @@ class HPDiscussion:
         n_sites, T, R = cases[0].n_sites, len(cases), self.E + 1
         twins = {n: HPTwin(n, backend, n_sites, R, T, **self.twin_kw) for n in "AB"}
         self.twins, self.transcript = twins, []
+        r0 = 1 if self.twin_kw.get("facts_first") else 0  # first round with probabilities
         m = {
             k: np.full(T, np.nan)
             for k in (
@@ -95,14 +98,15 @@ class HPDiscussion:
                     out = {n: f.result() for n, f in futs.items()}
                     for n, r in out.items():
                         sent[n].append((r.message, r.probs))
-                        prev[n] = r.probs
+                        if r.probs is not None:
+                            prev[n] = r.probs
                         replies += r.replies
                         fails += not r.ok
                     rounds.append(
                         {
                             n: {
                                 "message": r.message,
-                                "probs": r.probs.tolist(),
+                                "probs": None if r.probs is None else r.probs.tolist(),
                                 "ok": r.ok,
                                 "notes": twins[n].notes,
                             }
@@ -111,7 +115,7 @@ class HPDiscussion:
                     )
                 team = (prev["A"] + prev["B"]) / 2
                 pick, best = int(np.argmax(team)), case.best
-                first = {n: np.array(rounds[0][n]["probs"]) for n in "AB"}
+                first = {n: np.array(rounds[r0][n]["probs"]) for n in "AB"}
                 fav1 = {n: int(np.argmax(first[n])) for n in "AB"}
                 m["correct"][t] = pick == best
                 m["logscore"][t] = np.log(max(team[best], LOG_FLOOR))

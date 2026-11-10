@@ -14,7 +14,7 @@ Takes the latest run in each folder and reports, per p_shared:
 - mention rates (the "biased sampling" statistic of hidden-profile studies): the share of a
   twin's unshared clues that it mentions in its messages, against the share of its shared clues,
   and the same for the "key" unshared clues (those on the best site, or negative clues on the
-  twin's own round-1 favourite: the ones that overturn the misleading view). A clue counts as
+  twin's own first-read favourite: the ones that overturn the misleading view). A clue counts as
   mentioned if any of its keywords (`consensus.hp_clues`) appears in any of the twin's messages
   in the case; this misses paraphrases, so the rates are lower bounds.
 """
@@ -48,7 +48,8 @@ def mention_stats(rows: list[dict]) -> dict[str, float]:
         case, best = s["case"], s["case"]["best"]
         for twin in "AB":
             said = " ".join(r[twin]["message"] for r in s["rounds"]).lower()
-            fav = int(np.argmax(s["rounds"][0][twin]["probs"]))
+            first = next(r[twin]["probs"] for r in s["rounds"] if r[twin]["probs"] is not None)
+            fav = int(np.argmax(first))
             for c in case["clues"]:
                 m = mentioned(c["bank_id"], said)
                 if c["seen_by"] == "both":
