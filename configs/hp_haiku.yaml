@@ -1,0 +1,32 @@
+# Hidden-profile task (idea 3, less numeric; `consensus.hp_data`): two Haiku twins choose one of 3
+# café sites from verbal clues that are split between them. In "hidden" cases neither twin's own
+# clues favour the best site; only pooling the unshared clues finds it. "control" cases need no
+# pooling. H1 = the twins (3 rounds per case, told that each has facts the other lacks and that
+# the partner is a twin); F1 = one Haiku that sees every clue (full-information reference).
+# p_shared is the analogue of rho; run once per value with
+#   --set cases.p_shared=<p> experiment=hp_haiku_p<p>
+experiment: hp_haiku
+seed: 0
+n_runs: 3
+
+cases:
+  n_sites: 3
+  clues_per_site: 6
+  p_shared: 0.5
+  min_margin: 2.0
+  n_hidden: 15
+  n_control: 5
+
+protocols:
+  - name: hp_talk
+    label: H1
+    n_exchanges: 2
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    max_chars: 600
+    notes_chars: 800
+    history_len: 10
+    tell_split: true
+    tell_twin: true
+  - name: solo_full
+    label: F1
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
