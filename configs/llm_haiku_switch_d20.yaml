@@ -1,0 +1,48 @@
+# Switching twins at d = 20 (20 features per twin, a1..a20 / b1..b20). As
+# configs/llm_haiku_switch.yaml (two pairs on disjoint training cases, B twins swap pairs,
+# unannounced, at step 21; p1/p2 continue as the paired control), but with the d = 20
+# self-learners that have a regression tool in the learning phase (S1nt,
+# configs/llm_haiku_self_d20_tool.yaml): without it half the d = 20 twins predict a constant,
+# so a swap could not show anything. At d = 20 the twins keep different sparse subsets of their
+# fitted features, so partners should differ more than at d = 3.
+experiment: llm_haiku_switch_d20
+seed: 0
+n_runs: 6
+summary_tail: 0.5
+plot_window: 5
+
+env:
+  d_A: 20
+  d_B: 20
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+post:
+  T: 40
+
+protocols:
+  - {name: no_talk, label: P0}
+  - name: llm_switch
+    label: SW20
+    switch_at: 20
+    pair_n: 200
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
+    train_tool: true
+    train_tool_calls: 3

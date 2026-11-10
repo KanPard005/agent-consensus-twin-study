@@ -4,6 +4,10 @@ sites, talks with its partner, and gives a probability for each site being the b
 Memory is as in the numeric task's "notes" mode: each round is a fresh call with the case, the
 partner's messages so far, the twin's private notes (rewritten every round, kept across cases)
 and a short table of past cases with the revealed best site.
+
+`facts_first=True` turns round 1 into a facts-only round: the twins send each other their facts
+but give no probabilities and are asked not to say which site they favour, so neither commits
+to (or hears) a first read before the partner's facts arrive.
 """
 
 from __future__ import annotations
@@ -21,9 +25,7 @@ next café. In each case there are {n_sites} candidate sites (Site 1 to Site {n_
 exactly one of them is the best choice. You and your partner have each been given facts about \
 the sites. {split_line}{twin_line}
 
-Each case has {n_rounds} rounds. In every round you and your partner simultaneously send each \
-other a message (at most {max_chars} characters) and each give your probability that each site \
-is the best choice. From round 2 on you see what your partner sent in the earlier rounds of the \
+Each case has {n_rounds} rounds. {rounds_line} From round 2 on you see what your partner sent in the earlier rounds of the \
 case. The team's choice is the site with the highest average of your two final-round \
 probabilities. After the final round you are told which site was in fact the best.
 
@@ -33,6 +35,21 @@ reliable your partner is, or conventions you and your partner use."""
 
 SPLIT_LINE = (
     "Some facts you both have; others only you have, and your partner has facts that you do not. "
+)
+ROUNDS_OPINION = (
+    "In every round you and your partner simultaneously send each other a message (at most "
+    "{max_chars} characters) and each give your probability that each site is the best choice."
+)
+ROUNDS_FACTS_FIRST = (
+    "In every round you and your partner simultaneously send each other a message (at most "
+    "{max_chars} characters). Round 1 is for facts only: share the facts you have, without "
+    "giving probabilities or saying which site you favour. From round 2 on you also each give "
+    "your probability that each site is the best choice."
+)
+FACTS_ROUND_ASK = (
+    "This is the facts-only round: in your message, share your facts (especially those your "
+    "partner may not have). Do not give probabilities or say which site you favour. Reply with "
+    "your message and your updated notes."
 )
 TWIN_LINE = (
     "Your partner is another instance of the same AI model as you, with the same instructions."
@@ -76,6 +93,11 @@ def parse_probs(data: dict | None, n_sites: int) -> np.ndarray | None:
     return p / p.sum() if p.sum() > 0 else None
 
 
+def message_schema() -> dict:
+    """JSON schema of the facts-only round: a message and notes, no probabilities."""
+    return probs_schema(0)
+
+
 def facts_block(case: Case, twin: str | None) -> list[str]:
     """The facts a twin sees (twin=None: all facts), grouped by site, in the case's order."""
     lines = []
@@ -95,7 +117,7 @@ class HPReply:
     """One round's answer: the message, the probabilities and the backend reply."""
 
     message: str
-    probs: np.ndarray
+    probs: np.ndarray | None  # None in a facts-only round
     ok: bool
     replies: list[BackendReply] = field(default_factory=list)
 
@@ -130,6 +152,8 @@ class HPTwin:
         Say that each twin has facts the other lacks (true by construction).
     tell_twin : bool
         Say that the partner is another instance of the same model.
+    facts_first : bool
+        Round 1 is facts only (no probabilities, no stated favourite).
     """
 
     def __init__(
@@ -144,31 +168,44 @@ class HPTwin:
         history_len: int = 10,
         tell_split: bool = True,
         tell_twin: bool = True,
+        facts_first: bool = False,
     ) -> None:
         self.name, self.backend = name, backend
         self.n_sites, self.n_rounds, self.T = n_sites, n_rounds, T
         self.max_chars, self.notes_chars, self.history_len = max_chars, notes_chars, history_len
+        self.facts_first = facts_first
+        rounds_line = ROUNDS_FACTS_FIRST if facts_first else ROUNDS_OPINION
         self.system = SYSTEM_PROMPT.format(
             name=name,
             n_sites=n_sites,
             n_rounds=n_rounds,
+            rounds_line=rounds_line.format(max_chars=max_chars),
             max_chars=max_chars,
             notes_chars=notes_chars,
             split_line=SPLIT_LINE if tell_split else "",
             twin_line=TWIN_LINE if tell_twin else "",
         ).replace(" \n", "\n")
         self.schema = probs_schema(n_sites)
+        self.facts_schema = message_schema()
         self.notes = ""
         self.history: list[CaseRecord] = []
 
-    def prompt(self, t: int, rnd: int, case: Case, partner: list[tuple[str, np.ndarray]]) -> str:
-        """User prompt for case t, round rnd (0-based); `partner` = [(message, probabilities)]."""
+    def is_facts_round(self, rnd: int) -> bool:
+        return self.facts_first and rnd == 0
+
+    def prompt(
+        self, t: int, rnd: int, case: Case, partner: list[tuple[str, np.ndarray | None]]
+    ) -> str:
+        """User prompt for case t, round rnd (0-based); `partner` = [(message, probabilities)],
+        probabilities None for a facts-only round."""
         lines = [f"Case {t + 1} of {self.T}, round {rnd + 1} of {self.n_rounds}.", "Your facts:"]
         lines += facts_block(case, self.name)
         if partner:
             lines.append("Partner's messages this case:")
             lines += [
                 f'  round {i + 1}: probabilities {fmt_probs(p)}; "{m}"'
+                if p is not None
+                else f'  round {i + 1}: "{m}"'
                 for i, (m, p) in enumerate(partner)
             ]
         else:
@@ -187,8 +224,10 @@ class HPTwin:
             hits = sum(h.team_pick == h.best for h in self.history)
             lines.append(f"Team picked the best site in {hits} of {len(self.history)} past cases.")
         lines.append(
-            "Reply with your message to your partner, your probability for each site, and your "
-            "updated notes."
+            FACTS_ROUND_ASK
+            if self.is_facts_round(rnd)
+            else "Reply with your message to your partner, your probability for each site, and "
+            "your updated notes."
         )
         return "\n".join(lines)
 
@@ -197,21 +236,33 @@ class HPTwin:
         t: int,
         rnd: int,
         case: Case,
-        partner: list[tuple[str, np.ndarray]],
+        partner: list[tuple[str, np.ndarray | None]],
         previous: np.ndarray | None,
     ) -> HPReply:
         """One round. An unusable reply keeps the twin's previous probabilities (uniform in
-        round 1) and sends an empty message."""
-        reply = self.backend.complete(self.system, self.prompt(t, rnd, case, partner), self.schema)
+        its first probability round) and sends an empty message. A facts-only round returns
+        probs=None."""
+        user = self.prompt(t, rnd, case, partner)
+        if self.is_facts_round(rnd):
+            reply = self.backend.complete(self.system, user, self.facts_schema)
+            data = reply.data if isinstance(reply.data, dict) else {}
+            msg = data.get("message")
+            if not isinstance(msg, str):
+                return HPReply("", None, False, [reply])
+            self._keep_notes(data.get("notes"))
+            return HPReply(msg[: self.max_chars], None, True, [reply])
+        reply = self.backend.complete(self.system, user, self.schema)
         p = parse_probs(reply.data, self.n_sites)
         if p is None:
             fallback = previous if previous is not None else np.full(self.n_sites, 1 / self.n_sites)
             return HPReply("", fallback, False, [reply])
         msg = str(reply.data.get("message", ""))[: self.max_chars]
-        notes = reply.data.get("notes")
+        self._keep_notes(reply.data.get("notes"))
+        return HPReply(msg, p, True, [reply])
+
+    def _keep_notes(self, notes) -> None:
         if isinstance(notes, str) and notes.strip():
             self.notes = notes[: self.notes_chars]
-        return HPReply(msg, p, True, [reply])
 
     def record(self, rec: CaseRecord) -> None:
         self.history.append(rec)
