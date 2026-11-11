@@ -90,6 +90,19 @@ two of you must submit one joint estimate: the team's prediction is the joint es
 propose in the final round (if your final proposals differ, their average is used), and the \
 team is scored by squared error. After the final round the true y is revealed to both of you."""
 
+# `team_rule="consensus"` (`consensus.consensus_game.LLMConsensus`): the twins must agree; a step
+# ends as soon as their estimates are within `tol`, and no agreement after the last round costs a
+# fixed penalty instead of being averaged (LogBook note 2026-11-11).
+ROUNDS_CONSENSUS = """\
+Each step has at most {n_rounds} rounds. In every round you and your partner simultaneously send \
+each other a message (at most {max_chars} characters) and each propose a team estimate of y. \
+From round 2 on you see what your partner sent in the earlier rounds of this step{shown}. The two \
+of you must reach a consensus: as soon as your two proposals in a round are within {tol} of each \
+other, the step ends and the team's prediction is their average, scored by squared error. If you \
+have not agreed by the end of round {n_rounds}, the team's prediction is not used and the team \
+gets a fixed penalty of {penalty} for the step instead. After the step ends the true y is \
+revealed to both of you."""
+
 TOOL_PAR = """
 
 You also have a regression tool. To use it, put predictor names in `regress` (allowed: \
@@ -543,6 +556,8 @@ class LLMTwin:
         history_features: bool = False,
         train_tool: bool = False,
         train_tool_calls: int = 3,
+        consensus_tol: float = 0.1,
+        penalty: float = 10.0,
     ) -> None:
         if learner not in ("linear", "self"):
             raise ValueError(f"learner must be 'linear' or 'self', got {learner!r}")
@@ -578,10 +593,13 @@ class LLMTwin:
             raise ValueError(f"memory must be 'notes' or 'persistent', got {memory!r}")
         if auto_regress and not tools:
             raise ValueError("auto_regress requires tools=True")
-        if team_rule not in ("average", "joint", "mediator"):
+        if team_rule not in ("average", "joint", "mediator", "consensus"):
             raise ValueError(
-                f"team_rule must be 'average', 'joint' or 'mediator', got {team_rule!r}"
+                "team_rule must be 'average', 'joint', 'mediator' or 'consensus', "
+                f"got {team_rule!r}"
             )
+        if team_rule == "consensus" and (isinstance(linear, LogisticAgent) or memory != "notes"):
+            raise ValueError("team_rule='consensus' needs the regression task and notes memory")
         if team_rule == "mediator" and (n_rounds != 1 or tools or memory != "notes"):
             raise ValueError("team_rule='mediator' needs one round, no tools and notes memory")
         self.name, self.linear, self.backend = name, linear, backend
@@ -590,6 +608,8 @@ class LLMTwin:
         self.update_linear = update_linear
         self.joint = team_rule == "joint"
         self.mediated = team_rule == "mediator"
+        self.consensus = team_rule == "consensus"
+        self.penalty = penalty
         self.show_est = show_partner_estimates
         self.max_tool_calls = max_tool_calls if tools else 0
         self.auto_regress = auto_regress
@@ -609,7 +629,7 @@ class LLMTwin:
             else []
         )
         self.schema = reply_schema(
-            self.joint,
+            self.joint or self.consensus,
             self.columns or None,
             notes=not self.persistent,
             logistic=self.logistic,
@@ -629,6 +649,9 @@ class LLMTwin:
             rounds_tpl = ROUNDS_JOINT if self.joint else ROUNDS_AVERAGE
             if self.mediated:
                 rounds_tpl = ROUNDS_MEDIATOR
+            if self.consensus:
+                rounds_tpl = ROUNDS_CONSENSUS
+                fmt.update(tol=f"{consensus_tol:g}", penalty=f"{penalty:g}")
         rounds_par = rounds_tpl.format(shown=shown, **fmt)
         if pooling_hint != "none":
             rounds_par += "\n\n" + POOLING_HINTS[pooling_hint]
@@ -781,8 +804,9 @@ class LLMTwin:
         self, t: int, rnd: int, x: np.ndarray, partner: list[tuple[str, float]], extra=()
     ) -> str:
         """User prompt for step t, round rnd (both 0-based); `partner` = [(message, estimate)]."""
+        upto = "up to " if self.consensus else ""
         header = f"Step {t + 1} of {self.T}" + (
-            "." if self.mediated else f", round {rnd + 1} of {self.n_rounds}."
+            "." if self.mediated else f", round {rnd + 1} of {upto}{self.n_rounds}."
         )
         lines = [header, self._features_line(x)]
         if not self.self_learn:
@@ -820,10 +844,13 @@ class LLMTwin:
                     return ""
                 return "".join(f" | {v:.3f}" for v in h.x)
 
+            def team(h: StepRecord) -> str:  # consensus rule: no team value without agreement
+                return "no agreement" if np.isnan(h.team) else f"{h.team:.3f}"
+
             lines += [
                 f"  {h.t + 1}{feats(h)} | {h.model_pred:.3f}"
                 + (f" | {h.partner_open:.3f}" if self.show_est else "")
-                + f" | {h.final_est:.3f} | {h.partner_final:.3f} | {h.team:.3f} | {h.y:.3f}"
+                + f" | {h.final_est:.3f} | {h.partner_final:.3f} | {team(h)} | {h.y:.3f}"
                 for h in recent
             ]
             H = self.history
@@ -834,10 +861,18 @@ class LLMTwin:
             else:
                 mse = lambda f: np.mean([(f(h) - h.y) ** 2 for h in H])  # noqa: E731
                 score = "Mean squared error"
+            if self.consensus:  # a step without agreement scores the penalty
+                team_score = np.mean(
+                    [self.penalty if np.isnan(h.team) else (h.team - h.y) ** 2 for h in H]
+                )
+                n_fail = sum(bool(np.isnan(h.team)) for h in H)
+                team_txt = f"team {team_score:.3f} (penalties included; no agreement in {n_fail})"
+            else:
+                team_txt = f"team {mse(lambda h: h.team):.3f}"
             lines.append(
                 f"{score} over all {len(H)} past steps: {solo} "
                 f"{mse(lambda h: h.model_pred):.3f}, your final {mse(lambda h: h.final_est):.3f}, "
-                f"team {mse(lambda h: h.team):.3f}."
+                f"{team_txt}."
             )
         lines += list(extra)
         lines.append(self._reply_line())
@@ -867,6 +902,8 @@ class LLMTwin:
             what = (
                 "your proposal for the joint estimate of y" if self.joint else "your estimate of y"
             )
+            if self.consensus:
+                what = "your proposal for the team estimate of y"
         if self.ask_interval:
             what += " (with your 80% interval, low and high)"
         if self.mediated:

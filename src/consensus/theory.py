@@ -159,3 +159,24 @@ def protocol_benchmarks(
         out[f"shift_A_exchange_{e}"] = float(path.shift_A[e])
         out[f"shift_B_exchange_{e}"] = float(path.shift_B[e])
     return out
+
+
+def agreement_probability(path: AgreementPath, tol: float) -> np.ndarray:
+    """P(|m^A_e - m^B_e| < tol) for each round e of the population dialogue, shape (E + 1,).
+
+    The gap m^A_e - m^B_e = <v_A^e - v_B^e, x> is linear in Gaussian x, so it is N(0, D_e) with
+    D_e = `path.disagreement[e]`, and P(|gap| < tol) = erf(tol / sqrt(2 D_e)) (= 1 when D_e = 0,
+    i.e. the twins announce the same function of x). This is the share of cases on which ideal
+    (Bayesian, known-model) twins have reached a consensus within tolerance by round e.
+    """
+    from math import erf, sqrt
+
+    return np.array([1.0 if D < 1e-14 else erf(tol / sqrt(2.0 * D)) for D in path.disagreement])
+
+
+def rounds_to_agree(path: AgreementPath, eps: float = 1e-10) -> float:
+    """First round e at which the population dialogue agrees exactly (D_e < eps); nan if never
+    within the path. Geanakoplos-Polemarchakis: finite for Gaussian x, since each round either
+    agrees or adds a new linear message to someone's information."""
+    hit = np.flatnonzero(path.disagreement < eps)
+    return float(hit[0]) if hit.size else float("nan")

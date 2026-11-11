@@ -573,6 +573,10 @@ def build_protocol(cfg: dict) -> Protocol:
         from consensus.mediator import MediatedExchange
 
         registry[name] = MediatedExchange
+    if name in ("consensus", "llm_consensus"):  # consensus.consensus_game imports this module
+        from consensus.consensus_game import ConsensusExchange, LLMConsensus
+
+        registry.update(consensus=ConsensusExchange, llm_consensus=LLMConsensus)
     if name == "llm_worded":  # imported here: consensus.worded imports this module
         from consensus.worded import WordedExchange
 
