@@ -1,7 +1,8 @@
 """Are linear twins that start talking later more entrenched?
 
 Usage:
-    python scripts/onset_entrench.py [--seeds 200] [--L 500] [--workers 8]
+    python scripts/onset_entrench.py [--seeds 200] [--L 500] [--d 3] [--ss 5 20 100 500 2000]
+        [--experiment onset_entrench] [--workers 8]
 
 Each twin first learns alone on the first s cases of a common stream (nested across s, so arms
 are paired), then talks for L steps (P2: one exchange; its opinion, the solo model, is frozen at
@@ -112,6 +113,8 @@ def main(argv=None) -> Path:
     )
     p.add_argument("--seeds", type=int, default=200)
     p.add_argument("--L", type=int, default=500, help="talking steps after onset")
+    p.add_argument("--ss", type=int, nargs="+", default=[5, 20, 100, 500, 2000], help="steps alone")
+    p.add_argument("--experiment", default="onset_entrench", help="results subfolder")
     p.add_argument("--sigma", type=float, default=0.5)
     p.add_argument("--d", type=int, default=3)
     p.add_argument("--lam", type=float, default=1.0)
@@ -121,8 +124,8 @@ def main(argv=None) -> Path:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
 
     rhos = [0.0, 0.5]
-    ss = [5, 20, 100, 500, 2000]
-    taus = [1, 3, 10, 30, 100, 300, args.L]
+    ss = args.ss
+    taus = sorted({t for t in (1, 3, 10, 30, 100, 300, 500, 1000, 3000) if t < args.L} | {args.L})
     res = np.zeros((len(rhos), len(PRIORS), len(ss), len(taus), 3, 2))  # mean, s.e.
     with ProcessPoolExecutor(args.workers) as ex:
         for j, rho in enumerate(rhos):
@@ -139,7 +142,7 @@ def main(argv=None) -> Path:
             res[j, ..., 0, 1] = 0.0
             log.info("rho %.1f done", rho)
 
-    run_dir = make_run_dir(args.results, "onset_entrench")
+    run_dir = make_run_dir(args.results, args.experiment)
     np.savez(run_dir / "onset_entrench.npz", res=res, rhos=rhos, ss=ss, taus=taus)
     metrics = ["msg_weight_share", "movement_share", "team_excess"]
     summary = {

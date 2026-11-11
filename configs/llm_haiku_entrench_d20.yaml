@@ -1,0 +1,53 @@
+# Entrenchment vs talk onset at d = 20 (LogBook 2026-11-11): self-learning twins (S1n setup with
+# the learning-phase regression tool, as S1nt in llm_haiku_self_d20_tool.yaml; without it half the
+# d = 20 twins learned only a constant) study the first n of the same 800 training cases (nested,
+# so arms are paired), then talk with the averaging rule and give an 80% interval with every
+# estimate. More cases studied = talking later. n starts at 50 because 25 cases cannot identify
+# 20 weights. Predictions in the communication phase are computed by hand from the notes.
+# One process per arm and replicate:
+#   --set "only=[P0,E50]" first_run=<r> n_runs=1 experiment=llm_haiku_onset_d20_rho0.0_E50_r<r>
+experiment: llm_haiku_entrench_d20
+seed: 0
+n_runs: 4
+summary_tail: 1.0
+plot_window: 10
+
+env:
+  d_A: 20
+  d_B: 20
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 800
+  n_B: 800
+  lam: 1.0
+
+post:
+  T: 30
+
+protocols:
+  - {name: no_talk, label: P0}
+  - &self
+    name: llm_exchange
+    label: E50
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
+    ask_interval: true
+    train_tool: true
+    train_tool_calls: 3
+    self_n_A: 50
+    self_n_B: 50
+  - {<<: *self, label: E200, self_n_A: 200, self_n_B: 200}
+  - {<<: *self, label: E800, self_n_A: 800, self_n_B: 800}

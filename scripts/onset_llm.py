@@ -2,7 +2,10 @@
 
 Usage:
     python scripts/onset_llm.py [--rhos 0.0 0.5] [--arms E25 E100 E400] [--runs 4]
-        [--min-gap 0.2] [--window 10]
+        [--min-gap 0.2] [--window 10] [--prefix llm_haiku_onset] [--experiment onset_llm]
+
+    d = 20: --prefix llm_haiku_onset_d20 --rhos 0.0 --arms E50 E200 E800
+            --experiment onset_llm_d20
 
 Reads the latest run of results/llm_haiku_onset_rho<rho>_<arm>_r<r> (configs/llm_haiku_entrench.yaml
 with post.T = 30: S1n twins that studied the first 25 / 100 / 400 of the same 400 training cases,
@@ -86,6 +89,8 @@ def main(argv=None) -> Path:
     p.add_argument("--min-gap", type=float, default=0.2)
     p.add_argument("--window", type=int, default=10)
     p.add_argument("--results", default=str(ROOT / "results"))
+    p.add_argument("--prefix", default="llm_haiku_onset", help="run folders: <prefix>_rho<rho>_...")
+    p.add_argument("--experiment", default="onset_llm", help="output subfolder")
     args = p.parse_args(argv)
     res = Path(args.results)
 
@@ -97,7 +102,7 @@ def main(argv=None) -> Path:
             per = {k: [] for k in METRICS}
             wins = []
             for r in range(args.runs):
-                run = latest(res / f"llm_haiku_onset_rho{rho}_{arm}_r{r}")
+                run = latest(res / f"{args.prefix}_rho{rho}_{arm}_r{r}")
                 if run is None:
                     print(f"missing rho={rho} {arm} r{r}")
                     continue
@@ -126,7 +131,7 @@ def main(argv=None) -> Path:
             table[rho][arm]["woa_by_window"] = np.round(np.nanmean(wins, 0), 3).tolist()
             table[rho][arm]["n_studied"] = ns[arm]
 
-    out = make_run_dir(res, "onset_llm")
+    out = make_run_dir(res, args.experiment)
     (out / "stats.json").write_text(json.dumps(table, indent=1))
     fig, _ = plot_onset_llm(
         args.rhos, args.arms, [ns[a] for a in args.arms], stats, windows, args.window
