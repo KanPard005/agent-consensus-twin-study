@@ -108,3 +108,18 @@ def test_llm_consensus_penalty_without_agreement(monkeypatch):
     assert np.all(out["game_loss"] == 10.0) and np.all(np.isnan(out["agreed_sq_err"]))
     last_user = backend.calls[-1][1]
     assert "no agreement" in last_user and "penalties included; no agreement in 2" in last_user
+
+
+def test_optimal_head_best_response():
+    from consensus.theory import optimal_head
+
+    # rho = 0 and a partner that knows its true weights: the best response keeps the true own
+    # weights and adds the partner's message with weight 1.
+    env, _, _ = make_twins(rho=0.0)
+    coef = optimal_head(env.Sigma, env.w, 3, env.w_B, "A")
+    assert np.allclose(coef, np.concatenate([env.w_A, [1.0]]))
+    # rho = 0.5, partner A announces <x^A, w^A>: B adds it with weight 1 and keeps w^B, not its
+    # solo (omitted-variable) weights.
+    env, _, _ = make_twins(rho=0.5)
+    coef = optimal_head(env.Sigma, env.w, 3, env.w_A, "B")
+    assert np.allclose(coef, np.concatenate([env.w_B, [1.0]]))

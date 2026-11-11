@@ -10,6 +10,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
 
 CAT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
@@ -222,5 +223,120 @@ def plot_llm_consensus(rhos, stats, time_stats):
         ax.legend(fontsize=7, frameon=False, ncol=2)
     for a in axes.flat:
         _style(a)
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_onset_entrench(res, rhos, priors, ss, taus):
+    """Linear twins: entrenchment vs steps since talk onset, one line per solo phase length s.
+
+    res : array (rhos, priors, ss, taus, 3 metrics, [mean, s.e.]); metrics are the message
+    weight as a share of the best response's, the movement toward the best response, and the
+    team excess MSE. Solid lines: training-posterior prior; dashed: fixed-strength prior.
+    """
+    titles = [
+        "weight on partner / best response (median)",
+        "movement toward best response",
+        "team excess MSE",
+    ]
+    fig, axes = plt.subplots(len(rhos), 3, figsize=(14, 3.6 * len(rhos)), squeeze=False)
+    for (j, rho), m in ((jr, m) for jr in enumerate(rhos) for m in range(3)):
+        ax = axes[j, m]
+        for q, s in enumerate(ss):
+            for i, ls in zip(range(len(priors)), ("-", "--")):
+                mean, se = res[j, i, q, :, m, 0], res[j, i, q, :, m, 1]
+                lab = f"alone {s} steps" if i == 0 else None
+                ax.plot(taus, mean, ls, color=RAMP[min(q, len(RAMP) - 1)], lw=2, label=lab)
+                ax.fill_between(taus, mean - se, mean + se, color=RAMP[min(q, 4)], alpha=0.12)
+        ax.set_xscale("log")
+        if m < 2:
+            ax.axhline(1.0, color=MUTED, lw=0.8, ls=":")
+        else:
+            ax.set_yscale("log")
+        ax.set_title(f"{titles[m]}, ρ = {rho:g}", fontsize=9, color=INK)
+        ax.set_xlabel("steps since talk started")
+        _style(ax)
+    axes[0, 0].legend(
+        fontsize=7,
+        frameon=False,
+        title="solid: training prior\ndashed: fixed prior",
+        title_fontsize=7,
+    )
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_onset_llm(rhos, arms, ns, stats, windows, window):
+    """LLM twins that studied n cases before talking. Four panels: WOA vs n, WOA over the run
+    per arm, 80% interval width vs n, and the twins' opening and team excess vs n.
+
+    stats[rho][arm][metric] : per-run values; windows[rho][arm] : (runs, windows) WOA.
+    """
+    fig, axes = plt.subplots(1, 4, figsize=(17, 3.8))
+
+    def mse(v):
+        v = np.asarray(v, float)
+        v = v[np.isfinite(v)]
+        return v.mean(), v.std() / np.sqrt(max(len(v), 1))
+
+    for k, rho in enumerate(rhos):
+        for ax, metric, ylab in (
+            (axes[0], "woa", "weight of advice, round 1 → 2"),
+            (axes[2], "width", "80% interval width (opening)"),
+        ):
+            ms = [mse(stats[rho][a][metric]) for a in arms]
+            ax.errorbar(
+                ns,
+                [m for m, _ in ms],
+                yerr=[s for _, s in ms],
+                fmt="o-",
+                color=CAT[k],
+                lw=2,
+                ms=5,
+                capsize=2,
+                label=f"ρ = {rho:g}",
+            )
+            ax.set(xscale="log", xlabel="cases studied alone before talking", ylabel=ylab)
+            ax.set_xticks(ns, [str(n) for n in ns])
+        ax = axes[3]
+        for metric, ls in (("solo_excess", "--"), ("team_excess", "-")):
+            ms = [mse(stats[rho][a][metric]) for a in arms]
+            ax.errorbar(
+                ns,
+                [m for m, _ in ms],
+                yerr=[s for _, s in ms],
+                fmt="o" + ls,
+                color=CAT[k],
+                lw=2,
+                ms=5,
+                capsize=2,
+                label=f"ρ = {rho:g}, {'own opening' if ls == '--' else 'team'}",
+            )
+        ax.set(xscale="log", xlabel="cases studied alone before talking", ylabel="excess MSE")
+        ax.set_xticks(ns, [str(n) for n in ns])
+        ax = axes[1]
+        for q, arm in enumerate(arms):
+            W = windows[rho][arm]
+            centers = (np.arange(W.shape[1]) + 0.5) * window
+            ax.plot(
+                centers,
+                np.nanmean(W, 0),
+                "o-" if k == 0 else "s--",
+                color=RAMP[min(q + 1, 4)],
+                lw=2,
+                ms=4,
+                label=f"n = {ns[q]}, ρ = {rho:g}",
+            )
+        ax.set(xlabel="step", ylabel="weight of advice, round 1 → 2")
+    axes[0].set_title("Deference vs time spent alone", fontsize=10, color=INK)
+    axes[1].set_title("Deference over the run", fontsize=10, color=INK)
+    axes[2].set_title("Stated confidence", fontsize=10, color=INK)
+    axes[3].set_title("Accuracy", fontsize=10, color=INK)
+    for i, ax in enumerate(axes):
+        ax.legend(fontsize=7, frameon=False)
+        if i != 1:  # log axes: only the n ticks, no minor labels
+            ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+            ax.set_xticks(ns, [str(n) for n in ns])
+        _style(ax)
     fig.tight_layout()
     return fig, axes

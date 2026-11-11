@@ -180,3 +180,27 @@ def rounds_to_agree(path: AgreementPath, eps: float = 1e-10) -> float:
     agrees or adds a new linear message to someone's information."""
     hit = np.flatnonzero(path.disagreement < eps)
     return float(hit[0]) if hit.size else float("nan")
+
+
+def optimal_head(
+    Sigma: np.ndarray, w: np.ndarray, d_A: int, theta_partner: np.ndarray, agent: str = "A"
+) -> np.ndarray:
+    """Population-optimal coefficients of a twin's one-message head, given the partner's opinion.
+
+    The head regresses y on z = (own x, m) with m = <x^partner, theta_partner> the partner's
+    (fixed) solo prediction. With z = M x the optimal coefficients are (M Sigma M^T)^{-1} M Sigma w.
+
+    Returns
+    -------
+    coef : ndarray, shape (d_own + 1,)
+        Weights on own features, then the weight on the partner's message (last entry).
+    """
+    d_B = len(w) - d_A
+    E_own = selector(d_A, d_B, agent)
+    m_row = np.zeros(d_A + d_B)
+    if agent == "A":
+        m_row[d_A:] = theta_partner
+    else:
+        m_row[:d_A] = theta_partner
+    M = np.vstack([E_own, m_row])
+    return np.linalg.pinv(M @ Sigma @ M.T, hermitian=True) @ (M @ Sigma @ w)
