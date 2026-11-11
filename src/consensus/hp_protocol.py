@@ -52,7 +52,8 @@ class HPDiscussion:
     n_exchanges : int
         Rounds after the first.
     **twin_kw
-        Passed to `HPTwin` (max_chars, notes_chars, history_len, tell_split, tell_twin).
+        Passed to `HPTwin` (max_chars, notes_chars, history_len, tell_split, tell_twin,
+        facts_first, memory, private_thinking).
     """
 
     name = "hp_talk"
@@ -105,6 +106,7 @@ class HPDiscussion:
                                 "probs": r.probs.tolist(),
                                 "ok": r.ok,
                                 "notes": twins[n].notes,
+                                "thinking": r.thinking,
                             }
                             for n, r in out.items()
                         }
@@ -131,6 +133,8 @@ class HPDiscussion:
                         "team_pick": pick,
                     }
                 )
+        # Full conversations of persistent twins (the runner saves them next to the transcript).
+        self.conversations = {n: tw.conv.turns for n, tw in twins.items() if tw.conv is not None}
         self.cost = _cost(replies)
         return m
 

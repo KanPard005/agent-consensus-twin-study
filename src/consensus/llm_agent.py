@@ -21,6 +21,9 @@ Options (all off by default, which reproduces the first LLM experiment's prompts
   batches and writes, in its notes, the model or rules it will predict with (`LLMTwin.train`).
   In the communication phase it predicts from its features and those notes alone; its solo
   opinion is its round-1 estimate.
+- `team_rule="mediator"` (`consensus.mediator`): the twins only predict. Each gives one estimate
+  per step with no messages, and a third agent, the mediator, sees both twins' features, notes
+  and estimates and makes the team's prediction.
 - `memory="persistent"`: one continuing conversation per twin for the whole run instead of a
   fresh call per round. Each round only adds a short user turn (the previous step's outcome,
   the new case, the partner's latest message); there are no notes and no history table, since
@@ -71,6 +74,13 @@ other a message (at most {max_chars} characters) and each give an estimate of y.
 on you see what your partner sent in the earlier rounds of this step{shown}. The team's \
 prediction is the average of your two final-round estimates, and the team is scored by squared \
 error. After the final round the true y is revealed to both of you."""
+
+# `team_rule="mediator"`: the twins only predict; a mediator (`consensus.mediator`) decides.
+ROUNDS_MEDIATOR = """\
+Each step you give one estimate of y; you and your partner do not exchange messages. A third \
+agent, the mediator, is shown your features, your notes and your estimate, and the same for your \
+partner, and makes the team's prediction, which is scored by squared error. After each step the \
+true y is revealed to you."""
 
 ROUNDS_JOINT = """\
 Each step has {n_rounds} rounds. In every round you and your partner simultaneously send each \
@@ -266,9 +276,11 @@ def reply_schema(
     notes: bool = True,
     logistic: bool = False,
     interval: bool = False,
+    message: bool = True,
 ) -> dict:
     """JSON schema of a twin's reply; adds the `regress` tool field if `columns` is given and
-    an 80% interval (`low`, `high`) if `interval`."""
+    an 80% interval (`low`, `high`) if `interval`; `message=False` drops the message (mediator
+    rule: the twins only predict)."""
     if logistic:
         est = (
             "Your proposed joint probability that y = 1" if joint else "Your probability that y = 1"
@@ -279,6 +291,8 @@ def reply_schema(
         "message": {"type": "string", "description": "Message to your partner (short)."},
         "estimate": {"type": "number", "description": f"{est} for this round."},
     }
+    if not message:
+        del props["message"]
     if logistic:
         props["estimate"].update(minimum=0, maximum=1)
     if interval:
@@ -448,7 +462,9 @@ class LLMTwin:
     update_linear : bool
         Whether the linear tool keeps learning from revealed labels (solo regression on own x).
     team_rule : str
-        "average" (each gives its own estimate) or "joint" (each proposes the team estimate).
+        "average" (each gives its own estimate), "joint" (each proposes the team estimate) or
+        "mediator" (each gives one estimate per step, no messages; a mediator decides, see
+        `consensus.mediator`; needs one round per step).
     show_partner_estimates : bool
         Show the partner's numeric estimates next to its messages (and in the history table).
     tools : bool
@@ -562,13 +578,18 @@ class LLMTwin:
             raise ValueError(f"memory must be 'notes' or 'persistent', got {memory!r}")
         if auto_regress and not tools:
             raise ValueError("auto_regress requires tools=True")
-        if team_rule not in ("average", "joint"):
-            raise ValueError(f"team_rule must be 'average' or 'joint', got {team_rule!r}")
+        if team_rule not in ("average", "joint", "mediator"):
+            raise ValueError(
+                f"team_rule must be 'average', 'joint' or 'mediator', got {team_rule!r}"
+            )
+        if team_rule == "mediator" and (n_rounds != 1 or tools or memory != "notes"):
+            raise ValueError("team_rule='mediator' needs one round, no tools and notes memory")
         self.name, self.linear, self.backend = name, linear, backend
         self.n_rounds, self.T = n_rounds, T
         self.history_len, self.max_chars, self.notes_chars = history_len, max_chars, notes_chars
         self.update_linear = update_linear
         self.joint = team_rule == "joint"
+        self.mediated = team_rule == "mediator"
         self.show_est = show_partner_estimates
         self.max_tool_calls = max_tool_calls if tools else 0
         self.auto_regress = auto_regress
@@ -593,6 +614,7 @@ class LLMTwin:
             notes=not self.persistent,
             logistic=self.logistic,
             interval=ask_interval,
+            message=not self.mediated,
         )
         self.notes = ""
         self.history: list[StepRecord] = []
@@ -605,6 +627,8 @@ class LLMTwin:
             rounds_tpl = ROUNDS_JOINT_LOGISTIC if self.joint else ROUNDS_AVERAGE_LOGISTIC
         else:
             rounds_tpl = ROUNDS_JOINT if self.joint else ROUNDS_AVERAGE
+            if self.mediated:
+                rounds_tpl = ROUNDS_MEDIATOR
         rounds_par = rounds_tpl.format(shown=shown, **fmt)
         if pooling_hint != "none":
             rounds_par += "\n\n" + POOLING_HINTS[pooling_hint]
@@ -757,10 +781,10 @@ class LLMTwin:
         self, t: int, rnd: int, x: np.ndarray, partner: list[tuple[str, float]], extra=()
     ) -> str:
         """User prompt for step t, round rnd (both 0-based); `partner` = [(message, estimate)]."""
-        lines = [
-            f"Step {t + 1} of {self.T}, round {rnd + 1} of {self.n_rounds}.",
-            self._features_line(x),
-        ]
+        header = f"Step {t + 1} of {self.T}" + (
+            "." if self.mediated else f", round {rnd + 1} of {self.n_rounds}."
+        )
+        lines = [header, self._features_line(x)]
         if not self.self_learn:
             lines.append(self._model_line(x))
 
@@ -776,7 +800,7 @@ class LLMTwin:
         elif partner:
             lines.append("Partner's messages this step:")
             lines += [f"  round {i + 1}: {fmt(m, e)}" for i, (m, e) in enumerate(partner)]
-        else:
+        elif not self.mediated:
             lines.append("Partner's messages this step: none yet.")
         lines.append(f"Your notes: {self.notes or '(empty)'}")
         if self.history:
@@ -845,6 +869,8 @@ class LLMTwin:
             )
         if self.ask_interval:
             what += " (with your 80% interval, low and high)"
+        if self.mediated:
+            return f"Reply with {what} for this step and your updated notes."
         if self.persistent:
             return f"Reply with your message to your partner and {what} for this round."
         return (
@@ -974,7 +1000,9 @@ class LLMTwin:
         """An independent copy in the current state (notes memory only): notes, history and the
         step's own messages are copied, the backend and the (unused) linear learner are shared."""
         if self.persistent:
-            raise ValueError("fork needs memory='notes' (a persistent conversation can't be copied)")
+            raise ValueError(
+                "fork needs memory='notes' (a persistent conversation can't be copied)"
+            )
         if self.update_linear:
             raise ValueError("fork needs update_linear=False (the linear learner is shared)")
         new = copy.copy(self)

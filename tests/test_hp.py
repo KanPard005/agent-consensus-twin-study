@@ -115,3 +115,46 @@ def test_unusable_reply_keeps_previous(monkeypatch):
     m = proto.run(cases)
     assert proto.transcript[0]["rounds"][1]["A"]["probs"] == [0.0, 0.0, 1.0]
     assert m["parse_fail"][0] == 2
+
+
+def test_persistent_private_thinking(monkeypatch):
+    """memory=persistent: one conversation per twin; round 1 of a case gives the facts (and from
+    case 2 the previous outcome), later rounds only the partner's latest message; no notes in
+    the schema. private_thinking: a `thinking` field the partner never sees."""
+    gen = HiddenProfileGenerator()
+    cases = gen.sample_set(np.random.default_rng(5), n_hidden=2, n_control=0)
+
+    def fn(system, user, schema):
+        assert "thinking" in schema["properties"] and "notes" not in schema["properties"]
+        assert list(schema["properties"])[0] == "thinking"
+        name = "A" if "agent A" in system else "B"
+        return {
+            "thinking": f"SECRET-{name}",
+            "message": f"{name} says hi",
+            "site_1": 0.5,
+            "site_2": 0.3,
+            "site_3": 0.2,
+        }
+
+    stub = StubBackend(fn)
+    monkeypatch.setattr(hp_protocol, "build_backend", lambda cfg: stub)
+    proto = HPDiscussion(backend={}, n_exchanges=2, memory="persistent", private_thinking=True)
+    proto.run(cases)
+    assert len(stub.conversations) == 2
+    assert set(proto.conversations) == {"A", "B"}
+    convA = [t["text"] for t in proto.conversations["A"] if t["role"] == "user"]
+    assert len(convA) == 2 * 3  # 2 cases x 3 rounds
+    assert "Your facts:" in convA[0] and "Outcome of case" not in convA[0]
+    assert "Your facts:" not in convA[1]  # later rounds: only the partner's message
+    assert "Partner's round 1 message: probabilities Site 1 0.50" in convA[1]
+    assert convA[3].startswith("Outcome of case 1: the best site was Site")
+    assert all("SECRET-B" not in u for u in convA)  # B's thinking never reaches A
+    assert proto.transcript[0]["rounds"][0]["A"]["thinking"] == "SECRET-A"
+    sysA = proto.twins["A"].system
+    assert "one continuing conversation for all 2 cases" in sysA
+    assert "private notes" not in sysA and "Your partner never sees it" in sysA
+
+
+def test_bad_memory_rejected():
+    with pytest.raises(ValueError):
+        hp_protocol.HPTwin("A", None, 3, 3, 10, memory="forever")

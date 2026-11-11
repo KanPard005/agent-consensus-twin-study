@@ -382,12 +382,20 @@ def test_distinct_feature_names(monkeypatch):
     monkeypatch.setattr(protocols, "build_backend", lambda cfg: backend)
     env, A, B = make_twins(n=30)
     xA, xB, y = env.sample(2, np.random.default_rng(1))
-    kw = dict(backend={}, n_exchanges=1, learner="self", train_batch=25, show_partner_estimates=True)
+    kw = dict(
+        backend={}, n_exchanges=1, learner="self", train_batch=25, show_partner_estimates=True
+    )
     proto = LLMExchange(feature_names="distinct", tell_twin=False, **kw)
     proto.run(A.clone(), B.clone(), xA, xB, y)
     sysA, sysB = proto.twins["A"].system, proto.twins["B"].system
-    assert "Your features are called a1..a3; your partner's features are called b1, b2 and so on." in sysA
-    assert "Your features are called b1..b2; your partner's features are called a1, a2 and so on." in sysB
+    assert (
+        "Your features are called a1..a3; your partner's features are called b1, b2 and so on."
+        in sysA
+    )
+    assert (
+        "Your features are called b1..b2; your partner's features are called a1, a2 and so on."
+        in sysB
+    )
     assert "another instance of the same AI model" not in sysA  # tell_twin=False
     assert any("Cases (a1, a2, a3 | y)" in u and "from a1..a3" in s_ for s_, u in seen["train"])
     assert any("Cases (b1, b2 | y)" in u for _, u in seen["train"])
@@ -426,8 +434,14 @@ def test_self_n_and_intervals(monkeypatch):
     env, A, B = make_twins(n=60)
     xA, xB, y = env.sample(2, np.random.default_rng(2))
     proto = LLMExchange(
-        backend={}, n_exchanges=1, learner="self", train_batch=25, feature_names="distinct",
-        ask_interval=True, self_n_A=25, self_n_B=60,
+        backend={},
+        n_exchanges=1,
+        learner="self",
+        train_batch=25,
+        feature_names="distinct",
+        ask_interval=True,
+        self_n_A=25,
+        self_n_B=60,
     )
     proto.run(A.clone(), B.clone(), xA, xB, y)
     assert seen["train"]["A"] == [25] and seen["train"]["B"] == [25, 25, 10]
@@ -466,8 +480,14 @@ def test_switch_exchange(monkeypatch):
     xA, xB, y = env.sample(6, np.random.default_rng(3))
     proto = protocols.build_protocol(
         dict(
-            name="llm_switch", switch_at=3, pair_n=30, backend={}, n_exchanges=1,
-            learner="self", train_batch=30, feature_names="distinct",
+            name="llm_switch",
+            switch_at=3,
+            pair_n=30,
+            backend={},
+            n_exchanges=1,
+            learner="self",
+            train_batch=30,
+            feature_names="distinct",
         )
     )
     out = proto.run(A.clone(), B.clone(), xA, xB, y)
@@ -510,8 +530,13 @@ def test_train_tool(monkeypatch):
     env, A, B = make_twins(n=50)
     xA, xB, y = env.sample(1, np.random.default_rng(4))
     proto = LLMExchange(
-        backend={}, n_exchanges=1, learner="self", train_batch=25, feature_names="distinct",
-        train_tool=True, train_tool_calls=2,
+        backend={},
+        n_exchanges=1,
+        learner="self",
+        train_batch=25,
+        feature_names="distinct",
+        train_tool=True,
+        train_tool_calls=2,
     )
     proto.run(A.clone(), B.clone(), xA, xB, y)
     log = proto.training["A"]
@@ -531,3 +556,59 @@ def test_train_tool(monkeypatch):
     assert not any("Tool call" in u for u in users)  # default: no tool
     with pytest.raises(ValueError):
         LLMExchange(backend={}, train_tool=True).run(A.clone(), B.clone(), xA, xB, y)
+
+
+def test_mediated_exchange(monkeypatch):
+    """llm_mediated: the twins answer once per step with no message field and no partner line;
+    the mediator sees each twin's features (by name), the notes it predicted with and its
+    estimate, and its prediction is the consensus; an unusable mediator reply falls back to the
+    twins' average."""
+    from consensus.mediator import MediatedExchange
+
+    seen = {"twin": [], "mediator": []}
+
+    def fn(system, user, schema):
+        if "learning phase" in system:
+            return {"notes": f"rule-{'A' if 'agent A' in system else 'B'}"}
+        if "You are a mediator" in system:
+            seen["mediator"].append(user)
+            if "Step 2 " in user:
+                return {"bad": 1}
+            return {"reasoning": "add", "estimate": 3.0, "notes": "med"}
+        seen["twin"].append((system, user, schema))
+        est = 1.0 if "agent A" in system else 2.0
+        return {"estimate": est, "notes": f"updated-{'A' if 'agent A' in system else 'B'}"}
+
+    backend = StubBackend(fn)
+    monkeypatch.setattr(protocols, "build_backend", lambda cfg: backend)
+    env, A, B = make_twins(n=30)
+    xA, xB, y = env.sample(2, np.random.default_rng(3))
+    proto = protocols.build_protocol(
+        dict(
+            name="llm_mediated",
+            backend={},
+            learner="self",
+            feature_names="distinct",
+            train_batch=25,
+        )
+    )
+    assert isinstance(proto, MediatedExchange)
+    m = proto.run(A.clone(), B.clone(), xA, xB, y)
+    system, user, schema = seen["twin"][0]
+    assert "message" not in schema["properties"]
+    assert "mediator" in system and "send each other a message" not in system
+    assert "Partner's messages" not in user and "round" not in user.split("\n")[0]
+    med1, med2 = seen["mediator"]
+    assert "Agent A:\n  features: a1=" in med1 and "Agent B:\n  features: b1=" in med1
+    assert "notes: rule-A" in med1 and "estimate: 1.000" in med1 and "estimate: 2.000" in med1
+    assert "notes: updated-A" in med2  # step 2 shows the notes after step 1's rewrite
+    assert "1 | 1.000 | 2.000 | 3.000 |" in med2  # recent steps table
+    np.testing.assert_allclose(m["sq_err"], [(3.0 - y[0]) ** 2, (1.5 - y[1]) ** 2])
+    np.testing.assert_array_equal(m["mediator_fail"], [0, 1])
+    np.testing.assert_allclose(m["shift_A"], 0)
+    assert proto.transcript[0]["mediator"]["reasoning"] == "add"
+
+    with pytest.raises(ValueError):
+        MediatedExchange(backend={}, learner="self", feature_names="shared")
+    with pytest.raises(ValueError):
+        MediatedExchange(backend={}, n_exchanges=1, learner="self", feature_names="distinct")

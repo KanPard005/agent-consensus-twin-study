@@ -17,6 +17,8 @@ Takes the latest run in each folder and reports, per p_shared:
   twin's own round-1 favourite: the ones that overturn the misleading view). A clue counts as
   mentioned if any of its keywords (`consensus.hp_clues`) appears in any of the twin's messages
   in the case; this misses paraphrases, so the rates are lower bounds.
+- for twins with private thinking (`private_thinking: true`): the same key-clue rate in their
+  thinking, i.e. whether a key clue the twin does not send was at least considered privately.
 """
 
 from __future__ import annotations
@@ -41,13 +43,14 @@ def mentioned(bank_id: int, text: str) -> bool:
     return any(k in text for k in CLUE_BANK[bank_id][2])
 
 
-def mention_stats(rows: list[dict]) -> dict[str, float]:
-    """Mention rates of a twin's own unshared, key unshared and shared clues, over both twins."""
+def mention_stats(rows: list[dict], field: str = "message") -> dict[str, float]:
+    """Mention rates of a twin's own unshared, key unshared and shared clues, over both twins,
+    in its messages (`field="message"`) or its private thinking (`field="thinking"`)."""
     hit = {"unshared": [], "key": [], "shared": []}
     for s in rows:
         case, best = s["case"], s["case"]["best"]
         for twin in "AB":
-            said = " ".join(r[twin]["message"] for r in s["rounds"]).lower()
+            said = " ".join(r[twin].get(field, "") for r in s["rounds"]).lower()
             fav = int(np.argmax(s["rounds"][0][twin]["probs"]))
             for c in case["clues"]:
                 m = mentioned(c["bank_id"], said)
@@ -99,13 +102,20 @@ def main(argv: list[str] | None = None) -> None:
         )
         rows = []
         for f in sorted((run_dir / "transcripts").glob(f"{L}_run*.jsonl")):
+            if "_conversation_" in f.name:
+                continue
             rows += [json.loads(line) for line in f.open()]
-        ms = mention_stats([r for r in rows if r["case"]["kind"] == "hidden"])
+        hidden_rows = [r for r in rows if r["case"]["kind"] == "hidden"]
+        ms = mention_stats(hidden_rows)
+        has_thinking = any(r[t].get("thinking") for s in rows for r in s["rounds"] for t in "AB")
+        key_thought = (
+            f"{mention_stats(hidden_rows, 'thinking')['key']:.0%}" if has_thinking else "–"
+        )
         defer = np.concatenate([z[f"{L}/defer_A"][hid], z[f"{L}/defer_B"][hid]])
         talk_rows.append(
             f"| {ps} | {np.mean(z[f'{L}/agree'][hid]):.2f} | {np.nanmean(defer):+.2f} "
             f"({np.sum(~np.isnan(defer))}) | {ms['unshared']:.0%} | {ms['key']:.0%} | "
-            f"{ms['shared']:.0%} | {np.nansum(z[f'{L}/parse_fail']):.0f} |"
+            f"{ms['shared']:.0%} | {key_thought} | {np.nansum(z[f'{L}/parse_fail']):.0f} |"
         )
     print(
         "| p_shared | own_A / own_B | add views | twins round 1 | team | F1 (all clues) | "
@@ -116,9 +126,9 @@ def main(argv: list[str] | None = None) -> None:
     print("\nHidden cases:\n")
     print(
         "| p_shared | final agreement | deference (n) | unshared mentioned | key unshared "
-        "mentioned | shared mentioned | unusable replies |"
+        "mentioned | shared mentioned | key unshared in thinking | unusable replies |"
     )
-    print("|---" * 7 + "|")
+    print("|---" * 8 + "|")
     print("\n".join(talk_rows))
 
 

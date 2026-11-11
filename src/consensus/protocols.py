@@ -330,6 +330,7 @@ class LLMExchange(Protocol):
         for agent in (A, B):
             agent.begin_communication(0, frozen=True)
         backend = build_backend(self.backend_cfg)
+        self.backend = backend  # kept for subclasses that add agents (`consensus.mediator`)
         n_train = {}
         for name, lin in (("A", A), ("B", B)):
             n_all = lin.heads[0].n
@@ -341,6 +342,7 @@ class LLMExchange(Protocol):
                     "training samples"
                 )
             n_train[name] = n
+        self.n_train = n_train  # cases each twin studies (learner: self) / its learner's n
         self.twins = {
             name: self.twin_cls(
                 name, lin, backend, self.E + 1, self.T, n_train[name], **self.twin_kw
@@ -567,6 +569,10 @@ def build_protocol(cfg: dict) -> Protocol:
         "llm_exchange": LLMExchange,
         "llm_switch": SwitchExchange,
     }
+    if name == "llm_mediated":  # imported here: consensus.mediator imports this module
+        from consensus.mediator import MediatedExchange
+
+        registry[name] = MediatedExchange
     if name == "llm_worded":  # imported here: consensus.worded imports this module
         from consensus.worded import WordedExchange
 
