@@ -2,7 +2,7 @@
 # experiment on differences"). As configs/llm_haiku_lambda.yaml, but with d_A = d_B = 20 and the
 # learning-phase regression tool (as configs/llm_haiku_entrench_d20.yaml; without it half the
 # d = 20 twins learned only a constant). The twins study the first 50 or 800 of the same 800
-# training cases (nested, paired); 25 cases cannot identify 20 weights.
+# training cases (nested, paired); E200 is a middle arm. 25 cases cannot identify 20 weights.
 # Weights w_A = U 1/sqrt(20), w_B = V 1/sqrt(20): the population disagreement is
 # 2 (1 - lambda^2)(1 + lambda) whatever d is.
 # One arm and replicate per process:
@@ -53,4 +53,5 @@ protocols:
     train_tool_calls: 3
     self_n_A: 50
     self_n_B: 50
+  - {<<: *self, label: E200, self_n_A: 200, self_n_B: 200}
   - {<<: *self, label: E800, self_n_A: 800, self_n_B: 800}
