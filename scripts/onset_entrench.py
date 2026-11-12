@@ -66,10 +66,21 @@ def one_seed(job):
     cfg = dict(d_A=d, d_B=d, rho=rho, norm_A=1.0, norm_B=1.0, sigma=sigma)
     env = LinearTwinEnv.from_config(cfg, np.random.default_rng(20_000 + seed))
     rng = np.random.default_rng([seed, int(round(100 * rho)) + 100])
+    return onset_arms(env, rng, ss, taus, L, d, lam)
+
+
+def onset_arms(env, rng, ss, taus, L, d, lam, with_disagreement=False):
+    """All (prior, s) arms on one environment and one pair of streams (training, then talking).
+
+    Returns an array (priors, s, taus, 3 metrics); with `with_disagreement` also the squared
+    disagreement of the two frozen solo opinions, (theta_A - theta_B)' Sigma (theta_A - theta_B)
+    in x-space, per s (shape (len(ss),)).
+    """
     xa_tr, xb_tr, y_tr = env.sample(max(ss), rng)
     xa, xb, y = env.sample(L, rng)
     S, w = env.Sigma, env.w
     out = np.full((len(PRIORS), len(ss), len(taus), 3), np.nan)
+    gap = np.full(len(ss), np.nan)
     for (i, prior), (j, s) in product(enumerate(PRIORS), enumerate(ss)):
         A, B = LinearAgent(d, lam, "A"), LinearAgent(d, lam, "B")
         for t in range(s):
@@ -79,6 +90,8 @@ def one_seed(job):
         for ag in (A, B):
             ag.begin_communication(1, prior_scale=ps, msg_prior_var=1.0)
         th = {"A": A.heads[0].theta.copy(), "B": B.heads[0].theta.copy()}
+        diff = np.concatenate([th["A"], -th["B"]])
+        gap[j] = diff @ S @ diff
         opt = {
             "A": optimal_head(S, w, d, th["B"], "A"),
             "B": optimal_head(S, w, d, th["A"], "B"),
@@ -104,7 +117,7 @@ def one_seed(job):
                 k += 1
                 if k == len(taus):
                     break
-    return out
+    return (out, gap) if with_disagreement else out
 
 
 def main(argv=None) -> Path:

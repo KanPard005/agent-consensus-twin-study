@@ -40,6 +40,64 @@ def block_covariance(d_A: int, d_B: int, rho: float) -> np.ndarray:
     return Sigma
 
 
+def random_orthogonal(d: int, rng: np.random.Generator) -> np.ndarray:
+    """Haar-distributed d x d orthogonal matrix (QR of a Gaussian matrix, with the sign fix)."""
+    Q, R = np.linalg.qr(rng.standard_normal((d, d)))
+    return Q * np.sign(np.diag(R))
+
+
+def controlled_env_parts(
+    d: int,
+    lambda_xz: float,
+    rng: np.random.Generator,
+    rotate: bool = True,
+    align: float = 1.0,
+    normalize: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Covariance and weights of the controlled design (LogBook note 2026-11-11, "More controlled
+    experiment on differences").
+
+    Sigma = [[I, lambda U V^T], [lambda V U^T, I]], so the cross-covariance has SVD U (lambda I) V^T,
+    and the weights are w_A = U s_A, w_B = V s_B with s_A = 1_d / sqrt(d), s_B = align * s_A.
+    The population solo opinions then disagree by
+
+        E[(yhat_A - yhat_B)^2] = 2 (1 - lambda^2)(1 + align * lambda),
+
+    which peaks at lambda = 1/3 for align = 1. The signal variance is 2 (1 + align * lambda);
+    `normalize` divides the weights by its square root so that it is 1 for every lambda, and the
+    disagreement becomes 1 - lambda^2.
+
+    Parameters
+    ----------
+    d : int
+        Dimension of each block (d_A = d_B = d).
+    lambda_xz : float
+        The common singular value of the cross-covariance, in (-1, 1).
+    rng : numpy Generator
+        Draws U and V (only when `rotate`).
+    rotate : bool
+        Random orthogonal U, V; otherwise U = V = I (the paired covariance with rho = lambda).
+    align : float
+        c = s_A' s_B, +1 (aligned) or -1 (opposed).
+    normalize : bool
+        Scale the weights so that Var(<x, w>) = 1.
+
+    Returns
+    -------
+    Sigma : ndarray, shape (2d, 2d)
+    w_A, w_B : ndarray, shape (d,)
+    """
+    if not -1.0 < lambda_xz < 1.0:
+        raise ValueError(f"lambda_xz must be in (-1, 1), got {lambda_xz}")
+    U = random_orthogonal(d, rng) if rotate else np.eye(d)
+    V = random_orthogonal(d, rng) if rotate else np.eye(d)
+    C = lambda_xz * U @ V.T
+    Sigma = np.block([[np.eye(d), C], [C.T, np.eye(d)]])
+    s = np.ones(d) / np.sqrt(d)
+    scale = 1.0 / np.sqrt(2.0 * (1.0 + align * lambda_xz)) if normalize else 1.0
+    return Sigma, scale * U @ s, scale * align * V @ s
+
+
 @dataclass
 class LinearTwinEnv:
     """Joint linear-Gaussian environment shared by the two agents.
@@ -92,8 +150,23 @@ class LinearTwinEnv:
         """Build from the `env` config block; random weight directions are scaled to `norm_A`, `norm_B`.
 
         Explicit weights can be given as lists under `w_A` / `w_B` instead.
+
+        `cov: controlled` uses `controlled_env_parts` instead (keys `lambda_xz`, `rotate`, `align`,
+        `normalize`; needs d_A = d_B; `rho`, `norm_*` and explicit weights are ignored).
         """
         d_A, d_B = cfg["d_A"], cfg["d_B"]
+        if cfg.get("cov", "paired") == "controlled":
+            if d_A != d_B:
+                raise ValueError("cov: controlled needs d_A = d_B")
+            Sigma, w_A, w_B = controlled_env_parts(
+                d_A,
+                cfg["lambda_xz"],
+                rng,
+                rotate=cfg.get("rotate", True),
+                align=cfg.get("align", 1.0),
+                normalize=cfg.get("normalize", False),
+            )
+            return cls(w_A=w_A, w_B=w_B, Sigma=Sigma, sigma=cfg["sigma"])
         w_A = (
             np.asarray(cfg["w_A"], float)
             if "w_A" in cfg

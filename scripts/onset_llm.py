@@ -7,6 +7,10 @@ Usage:
     d = 20: --prefix llm_haiku_onset_d20 --rhos 0.0 --arms E50 E200 E800
             --experiment onset_llm_d20
 
+    controlled design (note 2026-11-11, configs/llm_haiku_lambda.yaml):
+            --prefix llm_haiku_lambda --key lam --rhos 0.0 0.333 0.6 0.9 --arms E25 E400
+            --experiment onset_llm_lambda
+
 Reads the latest run of results/llm_haiku_onset_rho<rho>_<arm>_r<r> (configs/llm_haiku_entrench.yaml
 with post.T = 30: S1n twins that studied the first 25 / 100 / 400 of the same 400 training cases,
 then talk with the averaging rule, stating an 80% interval with each estimate). Per twin and run:
@@ -91,6 +95,7 @@ def main(argv=None) -> Path:
     p.add_argument("--results", default=str(ROOT / "results"))
     p.add_argument("--prefix", default="llm_haiku_onset", help="run folders: <prefix>_rho<rho>_...")
     p.add_argument("--experiment", default="onset_llm", help="output subfolder")
+    p.add_argument("--key", default="rho", help="parameter name in the run folders (rho or lam)")
     args = p.parse_args(argv)
     res = Path(args.results)
 
@@ -102,9 +107,9 @@ def main(argv=None) -> Path:
             per = {k: [] for k in METRICS}
             wins = []
             for r in range(args.runs):
-                run = latest(res / f"{args.prefix}_rho{rho}_{arm}_r{r}")
+                run = latest(res / f"{args.prefix}_{args.key}{rho}_{arm}_r{r}")
                 if run is None:
-                    print(f"missing rho={rho} {arm} r{r}")
+                    print(f"missing {args.key}={rho} {arm} r{r}")
                     continue
                 cfg, R, _ = load_run(run)
                 s2, T = cfg["env"]["sigma"] ** 2, cfg["post"]["T"]
@@ -134,11 +139,17 @@ def main(argv=None) -> Path:
     out = make_run_dir(res, args.experiment)
     (out / "stats.json").write_text(json.dumps(table, indent=1))
     fig, _ = plot_onset_llm(
-        args.rhos, args.arms, [ns[a] for a in args.arms], stats, windows, args.window
+        args.rhos,
+        args.arms,
+        [ns[a] for a in args.arms],
+        stats,
+        windows,
+        args.window,
+        key_label={"rho": "ρ", "lam": "λ"}.get(args.key, args.key),
     )
     fig.savefig(out / "onset_llm.png", dpi=150, bbox_inches="tight")
     for rho, d in table.items():
-        print(f"rho={rho}")
+        print(f"{args.key}={rho}")
         for arm, v in d.items():
             print(
                 " ",

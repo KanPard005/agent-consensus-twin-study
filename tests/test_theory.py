@@ -92,3 +92,28 @@ def test_population_opinion_shift():
     assert path.shift_A[-1] == pytest.approx(
         predictor_mse(a, env.Sigma, env.w, SIGMA_NOISE) - SIGMA_NOISE**2, abs=1e-8
     )
+
+
+@pytest.mark.parametrize("align", [1.0, -1.0])
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("lam", [0.0, 1 / 3, 0.6, -0.4])
+def test_controlled_disagreement_formula(lam, normalize, align):
+    """Population solo opinions disagree by 2(1 - lam^2)(1 + c lam), divided by the signal
+    variance 2(1 + c lam) when normalized (note 2026-11-11, more controlled experiment)."""
+    cfg = dict(d_A=4, d_B=4, cov="controlled", lambda_xz=lam, align=align,
+               normalize=normalize, sigma=SIGMA_NOISE)
+    env = LinearTwinEnv.from_config(cfg, np.random.default_rng(3))
+    S = env.Sigma
+    a, b = solo_predictors(S, env.w, 4)
+    disagreement = (a - b) @ S @ (a - b)
+    raw = 2 * (1 - lam**2) * (1 + align * lam)
+    expected = raw / (2 * (1 + align * lam)) if normalize else raw
+    assert disagreement == pytest.approx(expected, abs=1e-10)
+    assert env.w @ S @ env.w == pytest.approx(1.0 if normalize else 2 * (1 + align * lam))
+
+
+def test_controlled_without_rotation_is_paired():
+    cfg = dict(d_A=3, d_B=3, cov="controlled", lambda_xz=0.5, rotate=False, sigma=SIGMA_NOISE)
+    env = LinearTwinEnv.from_config(cfg, np.random.default_rng(0))
+    np.testing.assert_allclose(env.Sigma, block_covariance(3, 3, 0.5))
+    np.testing.assert_allclose(env.w_A, np.ones(3) / np.sqrt(3))

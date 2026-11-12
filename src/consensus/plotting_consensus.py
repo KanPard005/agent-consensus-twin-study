@@ -266,7 +266,7 @@ def plot_onset_entrench(res, rhos, priors, ss, taus):
     return fig, axes
 
 
-def plot_onset_llm(rhos, arms, ns, stats, windows, window):
+def plot_onset_llm(rhos, arms, ns, stats, windows, window, key_label="ρ"):
     """LLM twins that studied n cases before talking. Four panels: WOA vs n, WOA over the run
     per arm, 80% interval width vs n, and the twins' opening and team excess vs n.
 
@@ -294,7 +294,7 @@ def plot_onset_llm(rhos, arms, ns, stats, windows, window):
                 lw=2,
                 ms=5,
                 capsize=2,
-                label=f"ρ = {rho:g}",
+                label=f"{key_label} = {rho:g}",
             )
             ax.set(xscale="log", xlabel="cases studied alone before talking", ylabel=ylab)
             ax.set_xticks(ns, [str(n) for n in ns])
@@ -310,7 +310,7 @@ def plot_onset_llm(rhos, arms, ns, stats, windows, window):
                 lw=2,
                 ms=5,
                 capsize=2,
-                label=f"ρ = {rho:g}, {'own opening' if ls == '--' else 'team'}",
+                label=f"{key_label} = {rho:g}, {'own opening' if ls == '--' else 'team'}",
             )
         ax.set(xscale="log", xlabel="cases studied alone before talking", ylabel="excess MSE")
         ax.set_xticks(ns, [str(n) for n in ns])
@@ -325,7 +325,7 @@ def plot_onset_llm(rhos, arms, ns, stats, windows, window):
                 color=RAMP[min(q + 1, 4)],
                 lw=2,
                 ms=4,
-                label=f"n = {ns[q]}, ρ = {rho:g}",
+                label=f"n = {ns[q]}, {key_label} = {rho:g}",
             )
         ax.set(xlabel="step", ylabel="weight of advice, round 1 → 2")
     axes[0].set_title("Deference vs time spent alone", fontsize=10, color=INK)
@@ -337,6 +337,102 @@ def plot_onset_llm(rhos, arms, ns, stats, windows, window):
         if i != 1:  # log axes: only the n ticks, no minor labels
             ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
             ax.set_xticks(ns, [str(n) for n in ns])
+        _style(ax)
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_lambda_entrench(lambdas, variants, ss, res, gap, theory, prior_names):
+    """Linear twins in the controlled design: entrenchment vs lambda, one line per solo phase s.
+
+    res : array (variants, lambdas, priors, ss, 3 metrics, [mean, s.e.]) after the last talking
+    step (message-weight share, movement toward the best response, team excess).
+    gap : array (variants, lambdas, ss, [mean, s.e.]) disagreement of the frozen solo opinions.
+    theory : dict variant -> dict of population curves on `lambdas` ("disagreement",
+    "distance", the squared distance from the solo opinion to the best response).
+
+    Rows are variants; columns: disagreement (theory and measured), movement, 1 - movement
+    (the shortfall) scaled by the distance to cover, and team excess.
+    """
+    fig, axes = plt.subplots(len(variants), 4, figsize=(17, 3.6 * len(variants)), squeeze=False)
+    for v, name in enumerate(variants):
+        ax = axes[v, 0]
+        ax.plot(lambdas, theory[name]["disagreement"], color=INK, lw=2, label="population")
+        ax.plot(lambdas, theory[name]["distance"], color=MUTED, lw=2, ls="--",
+                label="distance to best response")
+        for q, s in enumerate(ss):
+            ax.plot(lambdas, gap[v, :, q, 0], "o-", color=RAMP[min(q, 4)], lw=1.2, ms=3,
+                    label=f"measured, s = {s}")
+        ax.set(title=f"{name}: disagreement of solo opinions", xlabel=r"$\lambda$")
+        for col, (m, ylab) in enumerate(
+            ((1, "movement toward best response"), (None, "shortfall x distance"),
+             (2, "team excess MSE")), start=1
+        ):
+            ax = axes[v, col]
+            for q, s in enumerate(ss):
+                for i, ls in zip(range(len(prior_names)), ("-", "--")):
+                    if m is None:
+                        y = (1 - res[v, :, i, q, 1, 0]) * theory[name]["distance"]
+                        se = res[v, :, i, q, 1, 1] * theory[name]["distance"]
+                    else:
+                        y, se = res[v, :, i, q, m, 0], res[v, :, i, q, m, 1]
+                    lab = f"alone {s} steps" if i == 0 else None
+                    ax.plot(lambdas, y, ls, color=RAMP[min(q, 4)], lw=2, label=lab)
+                    ax.fill_between(lambdas, y - se, y + se, color=RAMP[min(q, 4)], alpha=0.12)
+            if m == 1:
+                ax.axhline(1.0, color=MUTED, lw=0.8, ls=":")
+            ax.set(title=f"{name}: {ylab}", xlabel=r"$\lambda$")
+        for ax in axes[v]:
+            ax.axvline(1 / 3, color=MUTED, lw=0.8, ls=":")
+            _style(ax)
+            ax.title.set_fontsize(9)
+    axes[0, 0].legend(fontsize=7, frameon=False)
+    axes[0, 1].legend(fontsize=7, frameon=False, title="solid: training prior\ndashed: fixed prior",
+                      title_fontsize=7)
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_lambda_llm(lambdas, arms, ns, woa, gap, theory_gap, lin_lambdas, lin_entrench, lin_label):
+    """LLM twins in the controlled design, three panels against lambda.
+
+    woa, gap : dict arm -> array (lambdas, runs) of per-run weight of advice and mean squared
+    opening disagreement (yhat_A - yhat_B)^2. theory_gap : population disagreement on `lambdas`.
+    lin_entrench : linear twins' change in movement toward the best response between the two
+    solo-phase lengths in `lin_label` (on `lin_lambdas`), the analogue of the LLM WOA change.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(14, 3.8))
+
+    def ms(a):
+        return a.mean(1), a.std(1, ddof=1) / np.sqrt(a.shape[1])
+
+    ax = axes[0]
+    ax.plot(lambdas, theory_gap, color=INK, lw=2, label="population (linear solo)")
+    for q, arm in enumerate(arms):
+        m, s = ms(gap[arm])
+        ax.errorbar(lambdas, m, s, fmt="o-", color=CAT[q], lw=2, ms=5, capsize=2,
+                    label=f"LLM, studied {ns[q]}")
+    ax.set(title="disagreement of opening estimates", xlabel=r"$\lambda$",
+           ylabel=r"mean $(\hat y_A - \hat y_B)^2$")
+    ax = axes[1]
+    for q, arm in enumerate(arms):
+        m, s = ms(woa[arm])
+        ax.errorbar(lambdas, m, s, fmt="o-", color=CAT[q], lw=2, ms=5, capsize=2,
+                    label=f"studied {ns[q]}")
+    ax.set(title="LLM weight of advice, round 1 → 2", xlabel=r"$\lambda$", ylabel="WOA")
+    ax = axes[2]
+    d = woa[arms[-1]] - woa[arms[0]]
+    m, s = ms(d)
+    ax.errorbar(lambdas, m, s, fmt="o-", color=CAT[0], lw=2, ms=5, capsize=2,
+                label=f"LLM: WOA({ns[-1]}) − WOA({ns[0]})")
+    ax.plot(lin_lambdas, lin_entrench, "s--", color=CAT[1], lw=2, ms=4,
+            label=f"linear: movement({lin_label})")
+    ax.axhline(0, color=MUTED, lw=0.8)
+    ax.set(title="effect of studying longer (negative = entrenched)", xlabel=r"$\lambda$")
+    for ax in axes:
+        ax.axvline(1 / 3, color=MUTED, lw=0.8, ls=":")
+        ax.legend(fontsize=7, frameon=False)
+        ax.title.set_fontsize(9)
         _style(ax)
     fig.tight_layout()
     return fig, axes
