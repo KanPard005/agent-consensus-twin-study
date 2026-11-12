@@ -86,8 +86,10 @@ def main(argv=None) -> Path:
         "linear_lambdas": lin["lambdas"],
         f"linear_movement_s{s1}_minus_s{s0}": np.round(lin_ent, 3).tolist(),
         "woa_paired_diff": {
-            "mean": np.round(d.mean(1), 3).tolist(),
-            "se": np.round(d.std(1, ddof=1) / np.sqrt(args.runs), 3).tolist(),
+            "mean": np.round(np.nanmean(d, 1), 3).tolist(),
+            "se": np.round(
+                np.nanstd(d, 1, ddof=1) / np.sqrt(np.isfinite(d).sum(1)), 3
+            ).tolist(),
             "per_run": np.round(d, 3).tolist(),
         },
         **{f"woa_{a}": np.round(woa[a], 3).tolist() for a in args.arms},

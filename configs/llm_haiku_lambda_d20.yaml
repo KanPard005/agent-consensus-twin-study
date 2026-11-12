@@ -1,0 +1,56 @@
+# Controlled lambda design at d = 20 (LogBook 2026-11-12; note 2026-11-11, "More controlled
+# experiment on differences"). As configs/llm_haiku_lambda.yaml, but with d_A = d_B = 20 and the
+# learning-phase regression tool (as configs/llm_haiku_entrench_d20.yaml; without it half the
+# d = 20 twins learned only a constant). The twins study the first 50 or 800 of the same 800
+# training cases (nested, paired); 25 cases cannot identify 20 weights.
+# Weights w_A = U 1/sqrt(20), w_B = V 1/sqrt(20): the population disagreement is
+# 2 (1 - lambda^2)(1 + lambda) whatever d is.
+# One arm and replicate per process:
+#   --set env.lambda_xz=0.333 only=[E50] first_run=0 n_runs=1
+#         experiment=llm_haiku_lambda_d20_lam0.333_E50_r0
+experiment: llm_haiku_lambda_d20
+seed: 0
+n_runs: 4
+summary_tail: 1.0
+plot_window: 10
+
+env:
+  d_A: 20
+  d_B: 20
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  sigma: 0.5
+
+train:
+  n_A: 800
+  n_B: 800
+  lam: 1.0
+
+post:
+  T: 30
+
+protocols:
+  - {name: no_talk, label: P0}
+  - &self
+    name: llm_exchange
+    label: E50
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
+    ask_interval: true
+    train_tool: true
+    train_tool_calls: 3
+    self_n_A: 50
+    self_n_B: 50
+  - {<<: *self, label: E800, self_n_A: 800, self_n_B: 800}

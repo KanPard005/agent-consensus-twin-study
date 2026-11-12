@@ -403,8 +403,9 @@ def plot_lambda_llm(lambdas, arms, ns, woa, gap, theory_gap, lin_lambdas, lin_en
     """
     fig, axes = plt.subplots(1, 3, figsize=(14, 3.8))
 
-    def ms(a):
-        return a.mean(1), a.std(1, ddof=1) / np.sqrt(a.shape[1])
+    def ms(a):  # runs without a usable WOA (no opening gap above the threshold) are NaN
+        k = np.isfinite(a).sum(1)
+        return np.nanmean(a, 1), np.nanstd(a, 1, ddof=1) / np.sqrt(k)
 
     ax = axes[0]
     ax.plot(lambdas, theory_gap, color=INK, lw=2, label="population (linear solo)")
