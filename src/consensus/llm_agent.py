@@ -239,11 +239,11 @@ TWIN_LINE_ONLINE = (
 
 TRAIN_SYSTEM = """\
 You are agent {name}. You are in a learning phase on your own. You will be shown {n_train} \
-earlier cases in {n_batches} batches. Each case has {d} numeric features {f}1..{f}{d} and a \
+earlier cases in {n_batches} batches. Each case has {d} numeric features {names} and a \
 real-valued target y. Later you will have to predict y for new cases from these features, \
 together with a partner who sees other features of the same cases. You will not see these \
 cases again: only your notes are kept. After each batch, rewrite your notes (at most \
-{notes_chars} characters) with the model or rules you will use to predict y from {f}1..{f}{d}, how \
+{notes_chars} characters) with the model or rules you will use to predict y from {names}, how \
 reliable they are, and anything else worth remembering. Make them concrete enough that you can \
 compute a prediction from your notes alone."""
 
@@ -252,7 +252,7 @@ compute a prediction from your notes alone."""
 # case shown so far, which the twin has seen, though it keeps only its notes.
 TRAIN_TOOL_PAR = """
 
-You have a regression tool. To use it, put feature names in `regress` (any of {f}1..{f}{d}). It \
+You have a regression tool. To use it, put feature names in `regress` (any of {names}). It \
 fits y on them plus an intercept by least squares over all cases you have been shown so far \
 (this batch and the earlier ones), and returns the coefficients and the in-sample and \
 leave-one-out mean squared errors. A reply with a non-empty `regress` is a tool call: its notes \
@@ -275,6 +275,28 @@ FEATURE_LINE = (
     "Your features are called {own}1..{own}{d}; your partner's features are called "
     "{other}1, {other}2 and so on. They are different variables from yours, so your partner knows "
     "things about the case that you do not, and the other way round."
+)
+
+# `feature_labels` / `partner_labels` (`cov: overlap`): explicit feature names, with the shared
+# variables named the same for both twins. Said only when names are given.
+OVERLAP_FEATURE_LINE = (
+    "Your features are {own}; your partner's features are {other}. Features with the same name "
+    "are the same variable, so you both see {shared}; every other feature is seen by only one of "
+    "you."
+)
+NO_OVERLAP_FEATURE_LINE = (
+    "Your features are {own}; your partner's features are {other}. No feature is seen by both "
+    "of you."
+)
+PARTNER_INFO_LINE = "Your partner may have information that you do not."
+
+# `structure_hint`: the data-generating structure, stated in words (independent features, y
+# linear in seen and unseen features). The combination-rule probe (LogBook 2026-11-12) found that
+# independence alone is read as "average", while additivity plus independence gives the sum.
+STRUCTURE_HINT = (
+    "All the features (yours, your partner's, and any that neither of you sees) are "
+    "statistically independent of one another. y is a linear function of all of them plus "
+    "independent noise: a weighted sum of the features you see and the features you do not see."
 )
 
 TWIN_LINE = (
@@ -558,6 +580,10 @@ class LLMTwin:
         train_tool_calls: int = 3,
         consensus_tol: float = 0.1,
         penalty: float = 10.0,
+        feature_labels: list[str] | None = None,
+        partner_labels: list[str] | None = None,
+        structure_hint: bool = False,
+        partner_info: bool = False,
     ) -> None:
         if learner not in ("linear", "self"):
             raise ValueError(f"learner must be 'linear' or 'self', got {learner!r}")
@@ -580,6 +606,18 @@ class LLMTwin:
         self.train_tool, self.train_tool_calls = train_tool, train_tool_calls
         self.history_features = history_features
         self.f = name.lower() if self.distinct else "x"  # feature-name prefix
+        # Explicit names (overlap design) or the prefix numbering; `labels_given` switches the
+        # prompts to named features and says which names the partner has.
+        self.labels_given = feature_labels is not None
+        if self.labels_given:
+            if self.distinct or partner_labels is None or len(feature_labels) != linear.d:
+                raise ValueError(
+                    "feature_labels needs feature_names='shared', partner_labels and one name "
+                    "per feature"
+                )
+        self.labels = list(feature_labels or [f"{self.f}{i + 1}" for i in range(linear.d)])
+        self.partner_labels = list(partner_labels or [])
+        self.structure_hint, self.partner_info = structure_hint, partner_info
         self.train_batch = train_batch
         if pooling_hint not in POOLING_HINTS:
             raise ValueError(f"pooling_hint must be one of {sorted(POOLING_HINTS)}")
@@ -621,7 +659,7 @@ class LLMTwin:
         self.conv = None  # persistent conversation, created on the first call
         self.columns = (
             (
-                [f"{self.f}{i + 1}" for i in range(linear.d)]
+                list(self.labels)
                 + ["own_model"]
                 + (["partner_open"] if show_partner_estimates else [])
             )
@@ -701,6 +739,7 @@ class LLMTwin:
             other = "b" if self.f == "a" else "a"
             feat_line = FEATURE_LINE.format(own=self.f, other=other, d=linear.d)
             twin_line = f"{feat_line} {twin_line}".rstrip()
+        twin_line = " ".join(p for p in [self._partner_par(), twin_line] if p)
         self.system = sys_tpl.format(
             name=name,
             d=linear.d,
@@ -713,6 +752,11 @@ class LLMTwin:
             tool_par=tool_par,
             study_par=(STUDY_PAR_ONLINE if self.online else STUDY_PAR.format(n_train=n_train)),
         )
+        if self.labels_given:  # some features may be shared, so not "different features"
+            self.system = self.system.replace(
+                "your partner sees different features of the same case.",
+                "your partner sees some other features of the same case.",
+            )
 
     def model_prediction(self, x: np.ndarray) -> float:
         """The linear tool's prediction (solo head)."""
@@ -739,12 +783,14 @@ class LLMTwin:
             n_batches=n_batches,
             d=d,
             notes_chars=self.notes_chars,
-            f=self.f,
+            names=self._names_str(),
         )
+        if self.labels_given:  # who sees what (and the hints), also while learning alone
+            system += " " + self._partner_par()
         schema = TRAIN_SCHEMA
-        cols = [f"{self.f}{i + 1}" for i in range(d)]
+        cols = list(self.labels)
         if self.train_tool:
-            system += TRAIN_TOOL_PAR.format(f=self.f, d=d, max_calls=self.train_tool_calls)
+            system += TRAIN_TOOL_PAR.format(names=self._names_str(), max_calls=self.train_tool_calls)
             schema = {
                 **TRAIN_SCHEMA,
                 "properties": {
@@ -760,7 +806,7 @@ class LLMTwin:
         log = []
         for b in range(n_batches):
             sl = slice(b * self.train_batch, (b + 1) * self.train_batch)
-            head = ", ".join(f"{self.f}{i + 1}" for i in range(d)) + " | y"
+            head = ", ".join(self.labels) + " | y"
             rows = [
                 ", ".join(f"{v:.3f}" for v in xr) + f" | {yr:.3f}" for xr, yr in zip(X[sl], y[sl])
             ]
@@ -833,7 +879,7 @@ class LLMTwin:
             po = " | partner round 1" if self.show_est else ""
             solo = "your round 1" if self.self_learn else "your model"
             fx = (
-                "".join(f"{self.f}{i + 1} | " for i in range(self.linear.d))
+                "".join(f"{lab} | " for lab in self.labels)
                 if self.history_features
                 else ""
             )
@@ -882,9 +928,32 @@ class LLMTwin:
         """The current case's features: an unnamed array with shared names (original prompt), or
         named values (a1=..., ...) with distinct names, so the names in the prompt match the
         training cases and the system prompt."""
-        if not self.distinct:
+        if not (self.distinct or self.labels_given):
             return f"Your features: {np.array2string(x, precision=3, separator=', ')}"
-        return "Your features: " + ", ".join(f"{self.f}{i + 1}={v:.3f}" for i, v in enumerate(x))
+        return "Your features: " + ", ".join(f"{lab}={v:.3f}" for lab, v in zip(self.labels, x))
+
+    def _names_str(self) -> str:
+        """Feature names for the learning-phase prompt: "x1..x3" (as before) or the explicit list."""
+        if self.labels_given:
+            return ", ".join(self.labels)
+        return f"{self.f}1..{self.f}{self.linear.d}"
+
+    def _partner_par(self) -> str:
+        """Who sees which features, and the optional partner-information and structure hints."""
+        parts = []
+        if self.labels_given:
+            shared = [lab for lab in self.labels if lab in self.partner_labels]
+            fmt = dict(own=", ".join(self.labels), other=", ".join(self.partner_labels))
+            parts.append(
+                OVERLAP_FEATURE_LINE.format(shared=" and ".join(shared), **fmt)
+                if shared
+                else NO_OVERLAP_FEATURE_LINE.format(**fmt)
+            )
+        if self.partner_info:
+            parts.append(PARTNER_INFO_LINE)
+        if self.structure_hint:
+            parts.append(STRUCTURE_HINT)
+        return " ".join(parts)
 
     def _model_line(self, x: np.ndarray) -> str:
         if self.logistic:
@@ -961,7 +1030,7 @@ class LLMTwin:
         """History as rows of tool columns + y."""
         rows = []
         for h in self.history:
-            row = {f"{self.f}{i + 1}": float(v) for i, v in enumerate(h.x)}
+            row = {lab: float(v) for lab, v in zip(self.labels, h.x)}
             row.update(own_model=h.model_pred, partner_open=h.partner_open, y=h.y)
             rows.append(row)
         return rows
@@ -973,7 +1042,7 @@ class LLMTwin:
         """
         if rnd == 0:
             self._own_step = []
-        current = {f"{self.f}{i + 1}": float(v) for i, v in enumerate(x)}
+        current = {lab: float(v) for lab, v in zip(self.labels, x)}
         if not self.self_learn:
             current["own_model"] = self.model_prediction(x)
         if partner and self.show_est:

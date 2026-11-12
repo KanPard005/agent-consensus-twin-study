@@ -311,8 +311,12 @@ class LLMExchange(Protocol):
         self_n_B: int | None = None,
         self_offset_A: int = 0,
         self_offset_B: int = 0,
+        labels: dict[str, list[str]] | None = None,
         **twin_kw,
     ) -> None:
+        # Explicit feature names per twin ({A: [...], B: [...]}, `cov: overlap`); shared variables
+        # have the same name. Each twin is also told its partner's names.
+        self.labels = labels
         if (self_n_A or self_n_B or self_offset_A or self_offset_B) and twin_kw.get(
             "learner", "linear"
         ) != "self":
@@ -343,9 +347,16 @@ class LLMExchange(Protocol):
                 )
             n_train[name] = n
         self.n_train = n_train  # cases each twin studies (learner: self) / its learner's n
+        label_kw = {"A": {}, "B": {}}
+        if self.labels:
+            for name, other in (("A", "B"), ("B", "A")):
+                label_kw[name] = dict(
+                    feature_labels=self.labels[name], partner_labels=self.labels[other]
+                )
         self.twins = {
             name: self.twin_cls(
-                name, lin, backend, self.E + 1, self.T, n_train[name], **self.twin_kw
+                name, lin, backend, self.E + 1, self.T, n_train[name], **self.twin_kw,
+                **label_kw[name],
             )
             for name, lin in (("A", A), ("B", B))
         }
@@ -415,6 +426,7 @@ class LLMExchange(Protocol):
             {
                 "t": self.t,
                 "y": y,
+                "x": {"A": [float(v) for v in x_A], "B": [float(v) for v in x_B]},
                 "model_pred": {"A": solo_A, "B": solo_B},
                 **(
                     {"linear_ref": {"A": tA.model_prediction(x_A), "B": tB.model_prediction(x_B)}}

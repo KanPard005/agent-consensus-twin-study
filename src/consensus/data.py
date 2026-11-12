@@ -98,6 +98,46 @@ def controlled_env_parts(
     return Sigma, scale * U @ s, scale * align * V @ s
 
 
+def overlap_env_parts(
+    d_A: int, d_B: int, k: int, w: list[float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Covariance and weights when the twins share k of D = d_A + d_B - k independent features.
+
+    The features z_1..z_D are iid N(0, 1) and y = <z, w> + eps. A sees z_1..z_{d_A}, B sees
+    z_{d_A-k+1}..z_D, so the last k of A's features are the first k of B's (the same variables, and
+    in the prompts the same names). In the twin model's (x^A, x^B) coordinates the shared weights
+    are put on A's block and B's copies get weight 0; the pair (x^A_{d_A-k+j}, x^B_j) has
+    correlation 1, so Sigma is singular (sampled with a square root, not Cholesky).
+
+    Parameters
+    ----------
+    d_A, d_B : int
+        Number of features each twin sees.
+    k : int
+        Number of shared features, 0 <= k <= min(d_A, d_B).
+    w : list of float, length D
+        True weights on z_1..z_D.
+
+    Returns
+    -------
+    Sigma : ndarray, shape (d_A + d_B, d_A + d_B)
+    w_A : ndarray, shape (d_A,)
+    w_B : ndarray, shape (d_B,)
+    """
+    if not 0 <= k <= min(d_A, d_B):
+        raise ValueError(f"overlap must be in [0, min(d_A, d_B)], got {k}")
+    D = d_A + d_B - k
+    w = np.asarray(w, float)
+    if w.shape != (D,):
+        raise ValueError(f"w must have d_A + d_B - overlap = {D} entries, got {w.shape}")
+    # Selection matrix S (d_A + d_B, D): x = S z.
+    S = np.zeros((d_A + d_B, D))
+    S[np.arange(d_A), np.arange(d_A)] = 1.0
+    S[d_A + np.arange(d_B), d_A - k + np.arange(d_B)] = 1.0
+    w_B = np.concatenate([np.zeros(k), w[d_A:]])
+    return S @ S.T, w[:d_A].copy(), w_B
+
+
 @dataclass
 class LinearTwinEnv:
     """Joint linear-Gaussian environment shared by the two agents.
@@ -124,8 +164,13 @@ class LinearTwinEnv:
         self.d_B = len(self.w_B)
         if self.Sigma.shape != (self.d_A + self.d_B,) * 2:
             raise ValueError("Sigma shape does not match d_A + d_B")
-        # Cholesky factor for sampling x = L z with z ~ N(0, I).
-        self._L = np.linalg.cholesky(self.Sigma)
+        # Factor for sampling x = L z with z ~ N(0, I): Cholesky, or a symmetric square root when
+        # Sigma is singular (`cov: overlap`, where a shared feature appears in both blocks).
+        try:
+            self._L = np.linalg.cholesky(self.Sigma)
+        except np.linalg.LinAlgError:
+            vals, vecs = np.linalg.eigh(self.Sigma)
+            self._L = vecs * np.sqrt(np.clip(vals, 0.0, None))
 
     @property
     def w(self) -> np.ndarray:
@@ -153,8 +198,14 @@ class LinearTwinEnv:
 
         `cov: controlled` uses `controlled_env_parts` instead (keys `lambda_xz`, `rotate`, `align`,
         `normalize`; needs d_A = d_B; `rho`, `norm_*` and explicit weights are ignored).
+
+        `cov: overlap` uses `overlap_env_parts` (keys `overlap`, `w`): independent features, some
+        of them seen by both twins.
         """
         d_A, d_B = cfg["d_A"], cfg["d_B"]
+        if cfg.get("cov", "paired") == "overlap":
+            Sigma, w_A, w_B = overlap_env_parts(d_A, d_B, cfg["overlap"], cfg["w"])
+            return cls(w_A=w_A, w_B=w_B, Sigma=Sigma, sigma=cfg["sigma"])
         if cfg.get("cov", "paired") == "controlled":
             if d_A != d_B:
                 raise ValueError("cov: controlled needs d_A = d_B")
