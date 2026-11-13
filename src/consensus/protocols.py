@@ -589,6 +589,10 @@ def build_protocol(cfg: dict) -> Protocol:
         from consensus.consensus_game import ConsensusExchange, LLMConsensus
 
         registry.update(consensus=ConsensusExchange, llm_consensus=LLMConsensus)
+    if name == "llm_free_talk":  # imported here: consensus.free_talk imports this module
+        from consensus.free_talk import FreeTalkExchange
+
+        registry[name] = FreeTalkExchange
     if name == "llm_worded":  # imported here: consensus.worded imports this module
         from consensus.worded import WordedExchange
 

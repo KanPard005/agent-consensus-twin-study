@@ -57,3 +57,35 @@ def plot_overlap(summary: dict, path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_compaction(summary: dict, window_labels: list[str], path: Path) -> None:
+    """Entrenchment over the run, per compaction arm (`scripts/compact_analysis.py`).
+
+    Left: movement toward the best response by window (0 = kept own opening, 1 = best response).
+    Right: fitted weight on the partner's opening (β) by window. Arms are ordered by threshold,
+    so they use one ramp, light (most compaction) -> dark (never compacted)."""
+    from consensus.plotting_consensus import RAMP
+
+    arms = list(summary)
+    colors = RAMP[: len(arms)] if len(arms) <= len(RAMP) else CAT
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.4))
+    x = np.arange(len(window_labels))
+    for ax, key, title in (
+        (axes[0], "movement", "Movement toward the best response"),
+        (axes[1], "beta", "Weight on partner's opening (β)"),
+    ):
+        for arm, c in zip(arms, colors):
+            vals = [w[key] for w in summary[arm]["windows"]]
+            ax.plot(x, vals, "o-", color=c, lw=2, ms=6, label=arm)
+        ax.axhline(1.0, color=INK, lw=1, ls="--")
+        ax.set_xticks(x, [f"steps {w}" for w in window_labels], fontsize=8)
+        ax.set_title(title, fontsize=10, color=INK)
+        _style(ax)
+    axes[0].set_ylabel("median share of the way", fontsize=8, color=INK)
+    axes[1].set_ylabel("OLS coefficient", fontsize=8, color=INK)
+    axes[1].legend(fontsize=7, frameon=False, title="compact at", title_fontsize=7,
+                   loc="center left", bbox_to_anchor=(1.0, 0.5))
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
