@@ -89,3 +89,42 @@ def plot_compaction(summary: dict, window_labels: list[str], path: Path) -> None
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_sessions_lambda(by_lambda: dict, path: Path) -> None:
+    """Live-session twins in the controlled-lambda design (`scripts/sessions_lambda_analysis.py`).
+
+    Left: how the agreed prediction combines the openings, c_A + c_B (pairs as dots), for the
+    25- and 400-case arms, against the population-optimal blend (dashed) and averaging (dotted).
+    Right: first-attempt consensus rate by arm (lower = harder to agree)."""
+    lams = list(by_lambda)
+    x = np.array([float(v) for v in lams])
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(9, 3.4))
+    for j, (arm, lab) in enumerate((("25", "studied 25"), ("400", "studied 400"))):
+        off = (j - 0.5) * 0.02
+        vals = [np.nanmean(by_lambda[v][f"c_sum{arm}"]) for v in lams]
+        ax.plot(x + off, vals, "o-", color=CAT[j], lw=2, ms=6, label=lab)
+        for xi, v in zip(x, lams):
+            pts = by_lambda[v][f"c_sum{arm}"]
+            ax.scatter(np.full(len(pts), xi + off), pts, s=10, color=CAT[j], alpha=0.5, lw=0)
+    ax.plot(x, [by_lambda[v]["optimal_c_sum"] for v in lams], "--", color=INK, lw=1,
+            label="optimal blend")
+    ax.axhline(1.0, color=MUTED, lw=1, ls=":")
+    ax.text(x[-1], 1.02, "averaging", fontsize=7, color=MUTED, ha="right", va="bottom")
+    ax.set_xlabel("λ", fontsize=8, color=INK)
+    ax.set_ylabel("c_A + c_B", fontsize=8, color=INK)
+    ax.set_title("Agreed prediction on the two openings", fontsize=10, color=INK)
+    ax.legend(fontsize=7, frameon=False)
+    _style(ax)
+    for j, arm in enumerate(("25", "400")):
+        bx.plot(x, [by_lambda[v][f"first{arm}"] for v in lams], "o-", color=CAT[j], lw=2, ms=6,
+                label=f"studied {arm}")
+    bx.set_ylim(0, 1.05)
+    bx.set_xlabel("λ", fontsize=8, color=INK)
+    bx.set_ylabel("share of queries", fontsize=8, color=INK)
+    bx.set_title("Consensus on the first attempt", fontsize=10, color=INK)
+    bx.legend(fontsize=7, frameon=False)
+    _style(bx)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
