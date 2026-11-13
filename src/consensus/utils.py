@@ -48,8 +48,15 @@ def make_run_dir(root: str | Path, experiment: str) -> Path:
     """Create results/<experiment>/<timestamp>/ and return it."""
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     path = Path(root) / experiment / stamp
-    path.mkdir(parents=True, exist_ok=False)
-    return path
+    # Parallel processes can start in the same second: add a suffix instead of failing.
+    k = 1
+    while True:
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+            return path
+        except FileExistsError:
+            path = Path(root) / experiment / f"{stamp}_{k}"
+            k += 1
 
 
 def save_run(

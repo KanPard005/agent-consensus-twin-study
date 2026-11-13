@@ -8,6 +8,7 @@ dependencies = ["numpy>=1.24", "matplotlib>=3.7", "pyyaml>=6.0"]
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.4"]
 llm = ["anthropic>=2.6"]  # only for the api backend; the cli backend needs the `claude` CLI
+agents = ["claude-agent-sdk>=0.2.182"]  # consensus.sessions: twins as live agent sessions
 
 [build-system]
 requires = ["setuptools>=64"]

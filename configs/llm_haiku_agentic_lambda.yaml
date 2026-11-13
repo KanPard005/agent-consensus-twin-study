@@ -1,0 +1,45 @@
+# Agentic twins in the controlled-lambda design (LogBook 2026-11-13; the scripted version is
+# configs/llm_haiku_lambda.yaml, same seed, so the same U, V, training cases and query stream).
+# Sigma = [[I, lambda U V^T], [lambda V U^T, I]], w_A = U 1/sqrt(3), w_B = V 1/sqrt(3), sigma 0.5.
+# Each twin drives the data API (consensus.agentic): it may pull up to `agent.budget` training
+# cases (the first n of the same 400, so arms are nested and paired) and fit them with its
+# regression tool, then 30 queries with free messages after the opening.
+# Feature names are distinct (A: a1..a3, B: b1..b3); the twins are told the partner may know
+# things they don't; no structure hint (the features are correlated when lambda > 0).
+# Entrenchment = paired WOA(400) - WOA(25), as in scripts/lambda_llm.py.
+# One cell and replicate per process, e.g.:
+#   --set env.lambda_xz=0.9 agent.budget=25 first_run=0 n_runs=1
+#         experiment=llm_haiku_agentic_lam0.9_E25
+experiment: llm_haiku_agentic_lambda
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+agent:
+  backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 400
+  max_actions: 12
+  max_train_actions: 30
+  max_chars: 2000
+  compact_tokens: 8000
+  summary_chars: 4000
+  structure_hint: false
+  partner_info: true
+  tell_twin: true
+  max_cost_usd: 4.0       # per twin per run (E400 pulls 16 batches; a normal run is ~$3 per twin)
