@@ -128,3 +128,49 @@ def plot_sessions_lambda(by_lambda: dict, path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_entrench_sessions(out: dict, lambdas: list[str], path: Path) -> None:
+    """Entrenchment with live-session twins (`scripts/entrench_sessions_analysis.py`).
+
+    Left: the long-trained twin's weight of advice in mixed pairs against how long it studied
+    (log scale), one line per lambda, with the rational partner weight dashed (conceding less
+    than that = entrenchment). Right: equal pairs, the share of agreements at the exact
+    midpoint against n. Lambda is ordinal: one blue ramp, light (0) -> dark (0.9)."""
+    from consensus.plotting_consensus import RAMP
+
+    colors = RAMP[: len(lambdas)]
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(9.5, 3.5))
+    for lam, c in zip(lambdas, colors):
+        ks = sorted((k for k in out["mixed"] if k.split("_")[0] == lam),
+                    key=lambda k: int(k.split("_")[1]))
+        if ks:
+            n = [int(k.split("_")[1]) for k in ks]
+            w = [out["mixed"][k]["woa_long"] for k in ks]
+            e = [out["mixed"][k]["woa_long_se"] for k in ks]
+            r = [out["mixed"][k]["rational_partner_weight"] for k in ks]
+            ax.errorbar(n, w, yerr=e, fmt="o-", color=c, lw=2, ms=6, capsize=3, label=f"λ = {lam}")
+            ax.plot(n, r, "--", color=c, lw=1)
+        ke = sorted((k for k in out["equal"] if k.split("_")[0] == lam),
+                    key=lambda k: int(k.split("_")[1]))
+        if ke:
+            bx.plot([int(k.split("_")[1]) for k in ke], [out["equal"][k]["midpoint"] for k in ke],
+                    "o-", color=c, lw=2, ms=6, label=f"λ = {lam}")
+    ax.axhline(0.5, color=MUTED, lw=1, ls=":")
+    ax.text(ax.get_xlim()[1] if False else 1600, 0.51, "even split", fontsize=7, color=MUTED,
+            ha="right", va="bottom")
+    for a in (ax, bx):
+        a.set_xscale("log")
+        a.set_xticks([25, 100, 400, 1600], ["25", "100", "400", "1600"])
+        a.set_xlabel("cases studied alone (long-trained twin / both twins)", fontsize=8, color=INK)
+        _style(a)
+    ax.set_ylabel("WOA of the long-trained twin", fontsize=8, color=INK)
+    ax.set_title("Mixed pairs (partner studied 25); dashed = rational", fontsize=10, color=INK)
+    ax.legend(fontsize=7, frameon=False)
+    bx.set_ylim(0, 1.05)
+    bx.set_ylabel("share of agreements at the midpoint", fontsize=8, color=INK)
+    bx.set_title("Equal pairs", fontsize=10, color=INK)
+    bx.legend(fontsize=7, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)

@@ -49,8 +49,8 @@ You are agent {name}. Your task is to predict a real-valued label y from {d} num
 
 Training phase: get_training_data gives you up to 25 labelled cases per call ({budget} in \
 total), and regress fits y on the predictors you choose by least squares over every case whose \
-y you know. When you are ready, call start_queries to end the training phase; you cannot get \
-more training cases after that, and its result explains what comes next.
+y you know. {study_rule}When you are ready, call start_queries to end the training phase; you \
+cannot get more training cases after that, and its result explains what comes next.
 
 Keep working with the tools until a tool result says that the run is over; do not stop before \
 that."""
@@ -120,17 +120,21 @@ class ConsensusAPI:
         queries: dict,
         y: np.ndarray,
         labels: dict,
-        budget: int,
+        budget: int | dict,
         tol: float = 0.01,
         max_attempts: int = 3,
         penalty: float = 10.0,
         max_chars: int = 2000,
         cap: int = 25,
+        study_all: bool = False,
     ) -> None:
         self.cond = threading.Condition()
-        self.labels, self.budget = labels, budget
-        self.Xtr = {k: train[k][0][:budget] for k in "AB"}
-        self.ytr = {k: train[k][1][:budget] for k in "AB"}
+        # Training budget per twin (an int for both, or {"A": n_A, "B": n_B}); with `study_all`
+        # a twin must pull its whole budget before start_queries (the entrenchment manipulation).
+        self.budget = budget if isinstance(budget, dict) else {"A": budget, "B": budget}
+        self.labels, self.study_all = labels, study_all
+        self.Xtr = {k: train[k][0][: self.budget[k]] for k in "AB"}
+        self.ytr = {k: train[k][1][: self.budget[k]] for k in "AB"}
         self.qx, self.y, self.T = queries, np.asarray(y, float), len(y)
         self.tol, self.max_attempts, self.penalty = tol, max_attempts, penalty
         self.max_chars, self.cap = max_chars, cap
@@ -231,9 +235,9 @@ class ConsensusAPI:
         with self.cond:
             if self.phase[k] != "train":
                 return "Error: the training phase is over."
-            n = int(min(max(int(n), 1), 25, self.budget - self.n_seen[k]))
+            n = int(min(max(int(n), 1), 25, self.budget[k] - self.n_seen[k]))
             if n <= 0:
-                return f"You have used all {self.budget} training cases."
+                return f"You have used all {self.budget[k]} training cases."
             a, b = self.n_seen[k], self.n_seen[k] + n
             self.n_seen[k] = b
             head = ", ".join(self.labels[k]) + " | y"
@@ -241,7 +245,7 @@ class ConsensusAPI:
                 ", ".join(f"{v:.3f}" for v in x) + f" | {v_:.3f}"
                 for x, v_ in zip(self.Xtr[k][a:b], self.ytr[k][a:b])
             ]
-            return f"Training cases {a + 1}-{b} of {self.budget} ({head}):\n" + "\n".join(rows)
+            return f"Training cases {a + 1}-{b} of {self.budget[k]} ({head}):\n" + "\n".join(rows)
 
     def regress(self, k: str, predictors: list[str]) -> str:
         with self.cond:
@@ -269,6 +273,11 @@ class ConsensusAPI:
         with self.cond:
             if self.phase[k] != "train":
                 return "The training phase is already over."
+            if self.study_all and self.n_seen[k] < self.budget[k]:
+                return (
+                    f"Error: study all {self.budget[k]} training cases first (you have seen "
+                    f"{self.n_seen[k]})."
+                )
             self.phase[k] = "query"
             self.cond.notify_all()
             return intro.format(n_train=self.n_seen[k])
@@ -532,7 +541,11 @@ class TwinSession:
         self.intro = intro_text(api, name, structure_hint, partner_info)
         labels = api.labels[name]
         self.system = SYSTEM_TRAIN.format(
-            name=name, d=len(labels), names=", ".join(labels), budget=api.budget
+            name=name, d=len(labels), names=", ".join(labels), budget=api.budget[name],
+            study_rule=(
+                f"You must study all {api.budget[name]} training cases before the next phase. "
+                if api.study_all else ""
+            ),
         )
         self.live = Path(live_dir) if live_dir is not None else None
         self.run_id = run

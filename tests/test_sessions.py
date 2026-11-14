@@ -126,3 +126,18 @@ def test_weight_of_advice_in_records():
         if not np.isnan(r["woa"]["A"]):
             assert r["woa"]["A"] == 0.0 and r["woa"]["B"] == 1.0
             assert r["woa_first"] == r["woa"]
+
+
+def test_per_twin_budget_and_study_all():
+    api = make_api(T=2, budget=50)  # data for 50 cases each
+    api2 = ConsensusAPI(
+        {"A": (api.Xtr["A"], api.ytr["A"]), "B": (api.Xtr["B"], api.ytr["B"])},
+        api.qx, api.y, LABELS, budget={"A": 50, "B": 25}, study_all=True,
+    )
+    assert api2.budget == {"A": 50, "B": 25} and len(api2.Xtr["B"]) == 25
+    api2.get_training_data("A", 25)
+    assert api2.start_queries("A", "intro {n_train}").startswith("Error: study all 50")
+    api2.get_training_data("A", 25)
+    assert api2.start_queries("A", "intro {n_train}") == "intro 50"
+    assert api2.get_training_data("B", 25).startswith("Training cases 1-25 of 25")
+    assert api2.get_training_data("B", 25).startswith("You have used all 25")

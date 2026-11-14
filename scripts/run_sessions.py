@@ -60,12 +60,21 @@ def main(argv: list[str] | None = None) -> Path:
         rng = run_rng(seed, r)
         A, B = train_twins(env, cfg["train"], rng)  # same draws as scripts/run.py
         x_A, x_B, y = env.sample(T, rng)
+        # Training budgets: agent.budget for both, or agent.budget_long / budget_short for a
+        # mixed pair, with the long-trained twin alternating A, B, A, ... by pair index (so the
+        # names cannot bias the comparison).
+        if "budget_long" in ag:
+            long = "A" if r % 2 == 0 else "B"
+            budget = {long: ag["budget_long"], ("B" if long == "A" else "A"): ag["budget_short"]}
+        else:
+            long, budget = None, ag["budget"]
         api = ConsensusAPI(
             {"A": A.training_data(), "B": B.training_data()},
             {"A": x_A, "B": x_B},
             y,
             ag["labels"],
-            budget=ag["budget"],
+            budget=budget,
+            study_all=ag.get("study_all", False),
             tol=ag["tol"],
             max_attempts=ag["max_attempts"],
             penalty=ag["penalty"],
@@ -117,6 +126,8 @@ def main(argv: list[str] | None = None) -> Path:
             "errors": {k: tw.error for k, tw in twins.items()},
             "compactions": {k: len(tw.compactions) for k, tw in twins.items()},
             "training_cases": dict(api.n_seen),
+            "budget": dict(api.budget),
+            "long_twin": long,
             "queries_resolved": int(api.resolved.sum()),
             "failed": int(api.failed.sum()),
             "messages": len(api.messages),
