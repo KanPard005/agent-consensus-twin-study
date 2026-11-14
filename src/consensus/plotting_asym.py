@@ -59,3 +59,49 @@ def plot_asym_woa(cells: dict, lambdas: list[str], alphas: list[str], path: Path
     fig.tight_layout(rect=(0, 0.06, 1, 1))
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def plot_untrained_curves(cells: dict, lambdas: list[str], alphas: list[str], windows,
+                          path: Path) -> None:
+    """Learning curves without a training phase: MSE per window of queries, one panel per
+    (rule, lambda, alpha). Solid: the twins' finals (strong, weak; one line under consensus).
+    Dashed: the online own-feature regression of each twin. Dotted: the online joint regression
+    on both twins' features, what the pair could reach by sharing them."""
+    rules = [r for r in RULE_TITLES if any(k.startswith(r + "_") for k in cells)]
+    combos = [(lam, al) for lam in lambdas for al in alphas]
+    fig, axes = plt.subplots(len(rules), len(combos), figsize=(2.3 * len(combos), 2.6 * len(rules)),
+                             squeeze=False, sharex=True, sharey=True)
+    x = np.array([(a + b) / 2 + 0.5 for a, b in windows])
+    for i, rule in enumerate(rules):
+        for j, (lam, al) in enumerate(combos):
+            ax = axes[i, j]
+            _style(ax)
+            s = cells.get(f"{rule}_{lam}_{al}")
+            if s is None:
+                ax.set_visible(False)
+                continue
+            for c, (role, label) in enumerate(ROLES):
+                r = role[0].upper()
+                if not (rule == "consensus" and r == "W"):
+                    ax.plot(x, s[f"fin_{r}"], color=CAT[c] if rule != "consensus" else INK, lw=2,
+                            marker="o", ms=5,
+                            label=f"final, {label}" if rule != "consensus" else "agreed value")
+                ax.plot(x, s[f"ols_{r}"], color=CAT[c], lw=1.5, ls="--",
+                        label=f"own regression, {label}")
+            ax.plot(x, s["joint"], color=MUTED, lw=1.5, ls=":", label="joint regression (both)")
+            ax.set_title(f"{RULE_TITLES[rule]}\nλ = {lam}, α = {al}", fontsize=8, color=INK)
+            ax.set_yscale("log")
+            if i == len(rules) - 1:
+                ax.set_xlabel("query", fontsize=8, color=INK)
+            if j == 0:
+                ax.set_ylabel("MSE", fontsize=8, color=INK)
+            ax.tick_params(labelsize=7, colors=MUTED)
+    handles, labels = {}, {}
+    for ax in axes.flat:
+        for h, lab in zip(*ax.get_legend_handles_labels()):
+            handles.setdefault(lab, h)
+    fig.legend(list(handles.values()), list(handles.keys()), loc="lower center", ncol=4,
+               fontsize=7, frameon=False)
+    fig.tight_layout(rect=(0, 0.1, 1, 1))
+    fig.savefig(path, dpi=160)
+    plt.close(fig)

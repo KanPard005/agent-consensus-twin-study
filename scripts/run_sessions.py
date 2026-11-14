@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> Path:
             study_all=ag.get("study_all", False),
             team_rule=ag.get("team_rule", "consensus"),
             models_in_training=ag.get("models_in_training", False),
+            no_training=ag.get("no_training", False),
             tol=ag["tol"],
             max_attempts=ag["max_attempts"],
             penalty=ag["penalty"],

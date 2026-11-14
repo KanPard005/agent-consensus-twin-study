@@ -58,9 +58,7 @@ Keep working with the tools until a tool result says that the run is over; do no
 that."""
 
 START_QUERIES = """\
-The training phase is over ({n_train} training cases studied). From now on you have a partner, \
-agent {other}: another instance of the same AI model as you, with the same instructions, which \
-trained separately on its own cases. {partner_par}
+{opening} {partner_par}
 
 There are {T} queries. For each one:
 - next_query gives you the features of the case (it waits until your partner has also asked, \
@@ -72,6 +70,28 @@ something new, submits a prediction, or is also waiting);
 {rule_par} regress can now also use \
 own_opening and partner_opening (your and your partner's openings, over past queries). You can \
 make at most {cap} tool calls per query.{model_par} Call next_query to begin."""
+
+OPENING_TRAINED = """\
+The training phase is over ({n_train} training cases studied). From now on you have a partner, \
+agent {other}: another instance of the same AI model as you, with the same instructions, which \
+trained separately on its own cases."""
+
+# `no_training` (LogBook 2026-11-14): the twins start without any labelled cases and learn only
+# from the shared queries, whose y is revealed after each one; they have a partner from query 1.
+OPENING_UNTRAINED = """\
+There is no training phase: you start without any labelled cases, and the true y of each query \
+below is revealed after it. You have a partner, agent {other}: another instance of the same AI \
+model as you, with the same instructions, which also starts without any labelled cases."""
+
+SYSTEM_UNTRAINED = """\
+You are agent {name}. Your task is to predict a real-valued label y from {d} numeric features \
+({names}) of each case. You work only through the tools of a data API; regress fits y on the \
+predictors you choose by least squares over every case whose y you know.
+
+{intro}
+
+Keep working with the tools until a tool result says that the run is over; do not stop before \
+that."""
 
 # The team rule, in the start_queries text: the twins must agree ("consensus"), or each submits
 # its own final and the team's prediction is their average ("average").
@@ -227,7 +247,12 @@ class ConsensusAPI:
         study_all: bool = False,
         team_rule: str = "consensus",
         models_in_training: bool = False,
+        no_training: bool = False,
     ) -> None:
+        # No training phase: both twins start in the query phase with no labelled cases.
+        self.no_training = no_training
+        if no_training:
+            budget = 0
         # Model instances from the training phase on (with expression columns and training cases).
         self.models_in_training = models_in_training
         if team_rule not in ("consensus", "average", "individual"):
@@ -246,7 +271,7 @@ class ConsensusAPI:
         self.tol, self.max_attempts, self.penalty = tol, max_attempts, penalty
         self.max_chars, self.cap = max_chars, cap
         self.n_seen = {k: 0 for k in "AB"}
-        self.phase = {k: "train" for k in "AB"}  # train | query | done
+        self.phase = {k: "query" if no_training else "train" for k in "AB"}  # train | query | done
         self.q = {k: -1 for k in "AB"}
         self.want = {k: -1 for k in "AB"}  # query index the twin waits for in next_query
         self.calls = {k: {} for k in "AB"}  # tool calls per query
@@ -769,6 +794,8 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
                 k, str(args.get("name", "")), dict(args.get("values") or {})))
 
         tools += [new_model, add_case, fit_model]
+    if api.no_training:
+        tools = [t_ for t_ in tools if t_.name not in ("get_training_data", "start_queries")]
     server = create_sdk_mcp_server("data", tools=tools)
     return server, [f"mcp__data__{t.name}" for t in tools], tools
 
@@ -794,9 +821,11 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
             "consensus": RULE_CONSENSUS}[api.team_rule].format(
         tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}"
     )
+    opening = (OPENING_UNTRAINED.format(other=api.other(k)) if api.no_training
+               else OPENING_TRAINED.format(n_train="{n_train}", other=api.other(k)))
     return START_QUERIES.format(
+        opening=opening,
         rule_par=rule,
-        n_train="{n_train}",
         other=api.other(k),
         partner_par=" ".join(parts),
         T=api.T,
@@ -844,6 +873,9 @@ class TwinSession:
                 if (model_tools and api.models_in_training) else ""
             ),
         )
+        if api.no_training:
+            self.system = SYSTEM_UNTRAINED.format(
+                name=name, d=len(labels), names=", ".join(labels), intro=self.intro)
         self.live = Path(live_dir) if live_dir is not None else None
         self.run_id = run
         self.cost_usd = 0.0
@@ -936,7 +968,8 @@ class TwinSession:
             env={"MCP_TOOL_TIMEOUT": "3600000"},  # waiting for the partner can take minutes
             hooks={"PreCompact": [HookMatcher(hooks=[pre_compact])]},
         )
-        prompt = "Begin. You are in the training phase."
+        prompt = ("Begin." if self.api.no_training
+                  else "Begin. You are in the training phase.")
         async with ClaudeSDKClient(options=options) as client:
             for i in range(self.max_continues + 1):
                 await client.query(prompt)
