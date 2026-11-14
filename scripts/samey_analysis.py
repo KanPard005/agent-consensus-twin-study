@@ -62,8 +62,13 @@ def twin_strategy(calls: list[dict], own_labels: set[str], partner_labels: set[s
         strat = "no model"
     adds = sum(c["tool"] == "add_case" and not c["result"].startswith("Error") for c in calls)
     fits = sum(c["tool"] == "fit_model" for c in calls)
+    fits_q = sum(c["tool"] == "fit_model" and c["q"] >= 0 and not c["result"].startswith("Error")
+                 for c in calls)
+    made_train = sum(c["q"] < 0 for c in news)
+    made_query = sum(c["q"] >= 0 for c in news)
     return dict(strategy=strat, tried=tried, first_q=min((c["q"] for c in news), default=None),
-                n_models=len(news), adds=adds, fits=fits,
+                n_models=len(news), adds=adds, fits=fits, fits_query=fits_q,
+                made_train=made_train, made_query=made_query,
                 supplied=sorted(set().union(*cols) - auto) if cols else [])
 
 
@@ -114,6 +119,11 @@ def summarize(prefix: str, lam: str, n: int, with_tools: bool) -> dict | None:
                                   for s in STRATEGIES}
         out["mse_by_strategy"] = {s: ea.m([t["mse_final"] for t in twins if t["strategy"] == s])
                                   for s in STRATEGIES}
+        out["any_model"] = ea.m([t["n_models"] > 0 for t in twins])
+        out["model_in_training"] = ea.m([t["made_train"] > 0 for t in twins])
+        out["model_in_queries"] = ea.m([t["made_query"] > 0 for t in twins])
+        out["fits_model_in_queries"] = ea.m([t["fits_query"] > 0 for t in twins])
+        out["adds_cases"] = ea.m([t["adds"] > 0 for t in twins])
         firsts = [t["first_q"] for t in twins if t["first_q"] is not None]
         out["first_model_query"] = float(np.median(firsts)) + 1 if firsts else None
         out["supplied_columns"] = Counter(c for t in twins for c in t["supplied"]).most_common(8)
@@ -154,6 +164,14 @@ def main(argv: list[str] | None = None) -> Path:
     for v in out.values():
         cols.update(dict(v["new"]["supplied_columns"]))
     lines.append(f"\nColumns the twins supplied themselves (all cells): {cols.most_common(10)}")
+    lines += ["", "| λ | n | built a model: any / in training / in queries | fit a model in queries "
+              "| added cases |", "|---|---|---|---|---|"]
+    for k, v in out.items():
+        lam, n = k.split("_")
+        nw = v["new"]
+        lines.append(f"| {lam} | {n} | {nw['any_model']:.0%} / {nw['model_in_training']:.0%} / "
+                     f"{nw['model_in_queries']:.0%} | {nw['fits_model_in_queries']:.0%} "
+                     f"| {nw['adds_cases']:.0%} |")
     run_out = make_run_dir(str(ROOT / "results"), "samey")
     (run_out / "stats.json").write_text(json.dumps(out, indent=2, default=str))
     table = "\n".join(lines)

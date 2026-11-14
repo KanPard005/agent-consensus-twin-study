@@ -23,8 +23,10 @@ twin's messages and tool calls, query records, a status file per twin).
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
+import operator
 import logging
 import tempfile
 import threading
@@ -50,7 +52,7 @@ You are agent {name}. Your task is to predict a real-valued label y from {d} num
 Training phase: get_training_data gives you up to 25 labelled cases per call ({budget} in \
 total), and regress fits y on the predictors you choose by least squares over every case whose \
 y you know. {study_rule}When you are ready, call start_queries to end the training phase; you \
-cannot get more training cases after that, and its result explains what comes next.
+cannot get more training cases after that, and its result explains what comes next.{model_train_par}
 
 Keep working with the tools until a tool result says that the run is over; do not stop before \
 that."""
@@ -102,6 +104,21 @@ SAME_Y_LINE = "You and your partner predict the same quantity y for each case."
 
 # `model_tools`: fresh least-squares model instances the twin can start at any time, with any
 # columns. Described only by what they do; nothing says which columns to use.
+# `models_in_training`: model instances from the training phase on, with expression columns.
+MODEL_TRAIN_PAR = """
+
+You can also build model instances: new_model starts a least-squares model with a name and the \
+columns you choose: your feature names, arithmetic expressions of them (for example {ex1}*{ex2} or \
+{ex3}^2), or other names whose values you give later. With include_training it is filled with your \
+training cases (also the ones you get afterwards). fit_model fits one of your models. Your models \
+stay available after the training phase."""
+
+MODEL_PAR_TRAINED = """ Your model instances stay available, and new_model can start a fresh one at \
+any time with the columns you choose (your features, own_opening, partner_opening, arithmetic \
+expressions of these, or other names whose values you give); add_case adds the current case to \
+one of your models (its y is added once it is revealed); fit_model fits one of your models on its \
+cases and predicts the current case."""
+
 MODEL_PAR = """ You can also start fresh model instances at any time: new_model starts an empty \
 least-squares model with a name and the columns you choose (values for columns named after your \
 features, own_opening and partner_opening are filled in automatically; for any other column you \
@@ -123,8 +140,9 @@ TOOL_DOCS = {
     "read_messages": "Query phase: read new messages (see the instructions given at start_queries).",
     "submit_prediction": "Query phase: submit your prediction for the current case.",
     "new_model": (
-        "Query phase: start a fresh, empty least-squares model instance with a name and the "
-        "columns you choose (see the instructions given at start_queries)."
+        "Start a fresh least-squares model instance with a name and the columns you choose "
+        "(see your instructions for which columns are filled in automatically); "
+        "include_training fills it with your training cases where that is possible."
     ),
     "add_case": (
         "Query phase: add the current case to one of your model instances; give the values of "
@@ -146,6 +164,39 @@ def weight_of_advice(own: float, partner: float, value: float, min_gap: float = 
     if not all(np.isfinite([own, partner, value])) or abs(partner - own) <= min_gap:
         return float("nan")
     return float(np.clip((value - own) / (partner - own), -0.5, 1.5))
+
+
+_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+        ast.Div: operator.truediv, ast.Pow: operator.pow, ast.USub: operator.neg,
+        ast.UAdd: operator.pos}
+
+
+def eval_expr(expr: str, variables: dict) -> float | None:
+    """Value of an arithmetic expression of `variables` (+ - * / ^ and parentheses), or None if
+    it is not such an expression (other names, calls, ...). Used for model columns like a1*a2."""
+    try:
+        tree = ast.parse(expr.replace("^", "**"), mode="eval")
+    except SyntaxError:
+        return None
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.Name) and node.id in variables:
+            return float(variables[node.id])
+        if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
+            return _OPS[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
+            return _OPS[type(node.op)](ev(node.operand))
+        raise ValueError(expr)
+
+    try:
+        v = ev(tree)
+        return float(v) if np.isfinite(v) else None
+    except (ValueError, ZeroDivisionError, OverflowError, TypeError):
+        return None
 
 
 class ConsensusAPI:
@@ -175,7 +226,10 @@ class ConsensusAPI:
         cap: int = 25,
         study_all: bool = False,
         team_rule: str = "consensus",
+        models_in_training: bool = False,
     ) -> None:
+        # Model instances from the training phase on (with expression columns and training cases).
+        self.models_in_training = models_in_training
         if team_rule not in ("consensus", "average", "individual"):
             raise ValueError(
                 f"team_rule must be 'consensus', 'average' or 'individual', got {team_rule!r}"
@@ -303,6 +357,9 @@ class ConsensusAPI:
                 return f"You have used all {self.budget[k]} training cases."
             a, b = self.n_seen[k], self.n_seen[k] + n
             self.n_seen[k] = b
+            for m in self.models[k].values():  # models filled with training cases grow with them
+                if m.get("training"):
+                    m["rows"] += self._training_rows(k, m["columns"], a, b)
             head = ", ".join(self.labels[k]) + " | y"
             rows = [
                 ", ".join(f"{v:.3f}" for v in x) + f" | {v_:.3f}"
@@ -531,20 +588,46 @@ class ConsensusAPI:
                 vals["partner_opening"] = float(po)
         return vals
 
-    def new_model(self, k: str, name: str, columns: list[str]) -> str:
+    def _training_rows(self, k: str, cols: list[str], a: int, b: int) -> list[dict]:
+        """Rows of training cases a..b-1 for columns computable from twin k's features."""
+        rows = []
+        for x, yv in zip(self.Xtr[k][a:b], self.ytr[k][a:b]):
+            v = dict(zip(self.labels[k], map(float, x)))
+            rows.append({**{c: eval_expr(c, v) for c in cols}, "y": float(yv)})
+        return rows
+
+    def new_model(self, k: str, name: str, columns: list[str],
+                  include_training: bool | None = None) -> str:
         with self.cond:
-            if self.phase[k] != "query":
+            if self.phase[k] == "train" and not self.models_in_training:
                 return "Error: model instances are available in the query phase."
+            if self.phase[k] == "done":
+                return "The run is over."
             cols = list(dict.fromkeys(str(c) for c in columns))
             if not name or not cols or len(cols) > 30:
                 return "Error: give a name and 1 to 30 columns."
+            if include_training is None:  # default: with training cases while training
+                include_training = self.phase[k] == "train"
+            own = dict(zip(self.labels[k], [0.0] * len(self.labels[k])))
+            if include_training and any(eval_expr(c, own) is None for c in cols):
+                bad = [c for c in cols if eval_expr(c, own) is None]
+                return (f"Error: include_training needs columns computable from your features; "
+                        f"not computable: {', '.join(bad)}.")
             replaced = " (replacing the old one)" if name in self.models[k] else ""
-            self.models[k][name] = {"columns": cols, "rows": [], "pending": {},
-                                    "created_q": self.q[k]}
-            auto = [c for c in cols if c in self.labels[k] or c in ("own_opening",
-                                                                     "partner_opening")]
-            return (f"Model '{name}' created{replaced} with columns {', '.join(cols)}; it has no "
-                    f"data yet. Filled in automatically: {', '.join(auto) or 'none'}.")
+            rows = self._training_rows(k, cols, 0, self.n_seen[k]) if include_training else []
+            self.models[k][name] = {"columns": cols, "rows": rows, "pending": {},
+                                    "created_q": self.q[k], "training": bool(include_training),
+                                    "phase": self.phase[k]}
+            if self.models_in_training:
+                auto_vars = dict(own, own_opening=0.0, partner_opening=0.0)
+                auto = [c for c in cols if eval_expr(c, auto_vars) is not None]
+            else:
+                auto = [c for c in cols if c in self.labels[k] or c in ("own_opening",
+                                                                         "partner_opening")]
+            data = (f"{len(rows)} training cases (more are added as you get them)"
+                    if include_training else "no data yet")
+            return (f"Model '{name}' created{replaced} with columns {', '.join(cols)}; it has "
+                    f"{data}. Filled in automatically: {', '.join(auto) or 'none'}.")
 
     def _row(self, k: str, name: str, values: dict) -> tuple[dict | None, str]:
         q = self.q[k]
@@ -554,8 +637,11 @@ class ConsensusAPI:
         auto = self._auto_values(k, q)
         row, missing = {}, []
         for c in m["columns"]:
+            v = eval_expr(c, auto) if self.models_in_training else None
             if c in auto:
                 row[c] = auto[c]
+            elif v is not None:
+                row[c] = v
             elif c in values:
                 try:
                     row[c] = float(values[c])
@@ -588,6 +674,8 @@ class ConsensusAPI:
             if self.phase[k] == "query" and 0 <= self.q[k] < self.T and not self.resolved[self.q[k]]:
                 row, _ = self._row(k, name, values or {})
                 current = row
+            elif self.phase[k] == "train":
+                return regress(m["rows"], m["columns"], None, rows=f"cases in '{name}'")
             return regress(m["rows"], m["columns"], current, rows=f"cases in '{name}'")
 
     def _attach_y(self, q: int) -> None:
@@ -658,11 +746,13 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
 
         @tool("new_model", TOOL_DOCS["new_model"],
               {**obj, "properties": {"name": {"type": "string"},
-                                     "columns": {"type": "array", "items": {"type": "string"}}},
+                                     "columns": {"type": "array", "items": {"type": "string"}},
+                                     "include_training": {"type": "boolean"}},
                "required": ["name", "columns"]})
         async def new_model(args):
             return await run("new_model", args, lambda: api.new_model(
-                k, str(args.get("name", "")), list(args.get("columns", []))))
+                k, str(args.get("name", "")), list(args.get("columns", [])),
+                args.get("include_training")))
 
         @tool("add_case", TOOL_DOCS["add_case"],
               {**obj, "properties": {"name": {"type": "string"}, "values": val_schema},
@@ -714,7 +804,8 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         max_attempts=api.max_attempts,
         penalty=f"{api.penalty:g}",
         cap=api.cap,
-        model_par=MODEL_PAR if model_tools else "",
+        model_par=(MODEL_PAR_TRAINED if api.models_in_training else MODEL_PAR)
+        if model_tools else "",
     )
 
 
@@ -746,6 +837,11 @@ class TwinSession:
             study_rule=(
                 f"You must study all {api.budget[name]} training cases before the next phase. "
                 if api.study_all else ""
+            ),
+            model_train_par=(
+                MODEL_TRAIN_PAR.format(ex1=labels[0], ex2=labels[1 % len(labels)],
+                                       ex3=labels[-1])
+                if (model_tools and api.models_in_training) else ""
             ),
         )
         self.live = Path(live_dir) if live_dir is not None else None

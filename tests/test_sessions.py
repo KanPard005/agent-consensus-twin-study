@@ -230,3 +230,26 @@ def test_same_y_and_model_instances():
     assert len(m["rows"]) == 1 and m["rows"][0]["b1"] == 0.3 and m["rows"][0]["y"] == api.y[0]
     assert m["rows"][0]["partner_opening"] == 2.0
     assert api.record(0)["models"]["A"]["both"]["n_rows"] == 1
+
+
+def test_models_in_training_with_expressions():
+    from consensus.sessions import TwinSession, eval_expr
+
+    assert eval_expr("x1*x2 + x3^2", {"x1": 2, "x2": 3, "x3": 1}) == 7.0
+    assert eval_expr("b1", {"x1": 1.0}) is None and eval_expr("__import__('os')", {}) is None
+    api = make_api(T=2, team_rule="individual", models_in_training=True)
+    # Training: a model with expression columns, filled with the training cases seen so far.
+    api.get_training_data("A", 25)
+    res = api.new_model("A", "quad", ["x1", "x1*x2", "x3^2"])
+    assert "25 training cases" in res and "Filled in automatically: x1, x1*x2, x3^2" in res
+    api.get_training_data("A", 25)  # later pulls are added too
+    m = api.models["A"]["quad"]
+    assert len(m["rows"]) == 50
+    assert np.isclose(m["rows"][0]["x1*x2"], api.Xtr["A"][0, 0] * api.Xtr["A"][0, 1])
+    assert "Regression of y on x1, x1*x2, x3^2 over 50" in api.fit_model("A", "quad", {})
+    bad = api.new_model("A", "p", ["x1", "b1"])
+    assert bad.startswith("Error: include_training needs") and "b1" in bad
+    # Prompts: the training prompt names the twin's own features as examples.
+    tw = TwinSession("B", api, model_tools=True, same_y=True)
+    assert "x3*x4" in tw.system and "include_training" in tw.system
+    assert "stay available" in tw.intro
