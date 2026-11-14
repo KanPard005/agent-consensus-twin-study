@@ -4,6 +4,8 @@ Each experiment folder holds runs of the same config with a different model or e
 sees the same data in every folder, so the comparison is paired. Per pair and model:
 - MSE of the openings and of the finals, against the sum and the average of the two openings
   (at lambda = 0 the sum is the population-optimal combination);
+- the best combination of the two openings in the pair, y ≈ b_own · own + b_partner · partner
+  (pooled over both twins; population value 1 / (1 + lambda) each at alpha = 1), and its MSE;
 - the fitted combination final ≈ c_own · own opening + c_partner · partner opening (pooled over
   both twins): (0.5, 0.5) is averaging, (1, 1) adding;
 - the mean weight of advice, messages per query, query-phase tool calls (regress / model tools),
@@ -64,6 +66,7 @@ def pair_stats(p: dict) -> dict:
            + [weight_of_advice(b, a, f) for a, b, f in zip(oA, oB, fB)])
     X = np.r_[np.c_[oA, oB], np.c_[oB, oA]]
     coef = np.linalg.lstsq(X, np.r_[fA, fB], rcond=None)[0]
+    best = np.linalg.lstsq(X, np.r_[y, y], rcond=None)[0]  # the best combination of the openings
     texts = p["texts"]["A"] + p["texts"]["B"]
     return dict(
         n=len(R), cost=p["cost"],
@@ -71,6 +74,8 @@ def pair_stats(p: dict) -> dict:
         mse_final=float(np.mean(np.r_[(fA - y) ** 2, (fB - y) ** 2])),
         mse_sum=float(np.mean((oA + oB - y) ** 2)),
         mse_avg=float(np.mean(((oA + oB) / 2 - y) ** 2)),
+        b_own=float(best[0]), b_partner=float(best[1]),
+        mse_best=float(np.mean((X @ best - np.r_[y, y]) ** 2)),
         c_own=float(coef[0]), c_partner=float(coef[1]),
         woa=float(np.nanmean(woa)),
         msgs=float(np.mean([len(s["messages"]) for s in R])),
@@ -84,7 +89,7 @@ def main(argv: list[str]) -> Path:
     data = {name: {r: pair_stats(p) for r, p in load(exp).items()} for name, exp in arms.items()}
     pairs = sorted(set().union(*(d.keys() for d in data.values())))
     cols = ("mse_final", "c_own", "c_partner", "woa", "msgs", "tool_calls")
-    lines = ["| pair | sum / average | " + " | ".join(
+    lines = ["| pair | sum / average / best (b_own, b_partner) | " + " | ".join(
         f"{name}: final MSE, c_own, c_partner, WOA, msgs/query, tool calls" for name in arms) + " |",
              "|" + "---|" * (2 + len(arms))]
     for r in pairs:
@@ -94,8 +99,10 @@ def main(argv: list[str]) -> Path:
             s = data[name].get(r)
             cells.append("—" if s is None else ", ".join(
                 f"{s[c]:.2f}" if isinstance(s[c], float) else str(s[c]) for c in cols))
-        lines.append(f"| {r} | {ref['mse_sum']:.2f} / {ref['mse_avg']:.2f} | " + " | ".join(cells) + " |")
-    lines += ["", "| model | pairs | final MSE | c_own | c_partner | pairs adding (c_partner ≥ 0.7) "
+        lines.append(f"| {r} | {ref['mse_sum']:.2f} / {ref['mse_avg']:.2f} / {ref['mse_best']:.2f} "
+                     f"({ref['b_own']:.2f}, {ref['b_partner']:.2f}) | " + " | ".join(cells) + " |")
+    lines += ["", "| model | pairs | final MSE (best combination) | c_own | c_partner "
+              "| pairs adding (c_partner ≥ 0.7) "
               "| msgs/query | tool calls/pair | text mentioning add/sum | cost/pair |",
               "|" + "---|" * 10]
     for name in arms:
@@ -104,7 +111,8 @@ def main(argv: list[str]) -> Path:
             continue
         m = lambda k: float(np.nanmean([s[k] for s in S]))  # noqa: E731
         lines.append(
-            f"| {name} | {len(S)} | {m('mse_final'):.2f} | {m('c_own'):.2f} | {m('c_partner'):.2f} "
+            f"| {name} | {len(S)} | {m('mse_final'):.2f} ({m('mse_best'):.2f}) | {m('c_own'):.2f} "
+            f"| {m('c_partner'):.2f} "
             f"| {sum(s['c_partner'] >= 0.7 for s in S)} | {m('msgs'):.2f} | {m('tool_calls'):.1f} "
             f"| {m('add_talk'):.0%} | ${m('cost'):.2f} |")
     run_out = make_run_dir(str(ROOT / "results"), "model_compare")
