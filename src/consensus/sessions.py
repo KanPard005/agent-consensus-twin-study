@@ -153,6 +153,84 @@ give the value); add_case adds the current case to one of your models (its y is 
 revealed); fit_model fits one of your models on the cases added to it and predicts the current \
 case."""
 
+# `prompt_style: clear` (LogBook 2026-11-14, Kanad's spec): the same task told more explicitly.
+# No "training phase": the twin studies {budget} labelled cases through a data API; the data and
+# regression APIs are listed function by function; at start_queries the twin is told outright that
+# it can train new models, communicate any information (features or predictions) and use its
+# partner's features in any way it wants. Nothing says what to share or how to combine.
+SYSTEM_CLEAR = """\
+You are agent {name}. Your task is to predict a real-valued quantity y for each case, using the \
+information you have. For each case you see {d} numeric features ({names}).
+
+You will first see {budget} labelled cases (their features and y) through a data API, and you \
+should learn to regress y on them. {study_rule}
+
+Data API:
+- get_training_data(n): the next n labelled cases (n from 1 to 25).
+- start_queries(): finish studying and start the queries; you cannot get more labelled cases \
+after that, and its result explains what comes next (next_query, submit_opening, send_message, \
+read_messages and submit_prediction are used during the queries).
+
+Regression API:
+- regress(predictors): least squares of y on the predictors you choose plus an intercept, over \
+every case whose y you know; returns the coefficients, in-sample and leave-one-out mean squared \
+errors, and the prediction for the current case when all predictors are known.
+- new_model(name, columns, include_training): starts a least-squares model instance with the \
+columns you choose: your feature names, arithmetic expressions of them (for example {ex1}*{ex2} \
+or {ex3}^2), or other names whose values you give later. With include_training it is filled with \
+your labelled cases (also the ones you get afterwards).
+- fit_model(name, values): fits one of your models on its cases (and, during the queries, \
+predicts the current case).
+- add_case(name, values): during the queries, adds the current case to one of your models (its y \
+is added once it is revealed).
+Your models stay available during the queries.
+
+Keep working with these tools and study the labelled cases. When you have finished studying, \
+call start_queries. Keep working with the tools until a tool result says that the run is over; \
+do not stop before that."""
+
+OPENING_CLEAR = """\
+You have finished studying ({n_train} labelled cases). From now on you have a partner, agent \
+{other}: another instance of the same AI model as you, with the same instructions, which trained \
+separately on its own cases."""
+
+PARTNER_CLEAR = """\
+Your features are {own}; your partner's features are {other_feats}: your features are different, \
+but you both predict the same quantity y for each case. Your partner may have information that \
+you do not."""
+
+START_QUERIES_CLEAR = """\
+{opening} {partner_par}
+
+There are {T} queries. For each one:
+- next_query gives you the features of the case (it waits until your partner has also asked, \
+so you both work on the same case);
+- submit_opening records your own estimate of y before you talk;
+- then you and your partner can communicate freely: send_message sends a message, and \
+read_messages shows your partner's opening and new messages (it waits until your partner sends \
+something new, submits a prediction, or is also waiting);
+{rule_par}
+
+At any time during the queries you can also:
+- train new models with the regression API: regress can now also use own_opening and \
+partner_opening (your and your partner's openings, over past queries), and new_model can use \
+your features, own_opening, partner_opening, arithmetic expressions of these, or other names \
+whose values you give;
+- communicate any information to your partner, such as your features or your predictions;
+- make use of your partner's features in any way you want.
+
+You can make at most {cap} tool calls per query. Call next_query to begin."""
+
+TOOL_DOCS_CLEAR = {
+    "get_training_data": "Get the next n labelled cases (n from 1 to 25).",
+    "start_queries": "Finish studying the labelled cases and start the queries.",
+    "new_model": (
+        "Start a fresh least-squares model instance with a name and the columns you choose "
+        "(see your instructions for which columns are filled in automatically); "
+        "include_training fills it with your labelled cases where that is possible."
+    ),
+}
+
 TOOL_DOCS = {
     "get_training_data": "Get the next n labelled training cases (n from 1 to 25).",
     "regress": (
@@ -738,9 +816,17 @@ class ConsensusAPI:
                     m["rows"].append({**row, "y": float(self.y[q])})
 
 
-def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False):
+def _tool_docs(prompt_style: str) -> dict[str, str]:
+    """Tool descriptions; the clear prompt style drops the words "training phase"."""
+    return {**TOOL_DOCS, **TOOL_DOCS_CLEAR} if prompt_style == "clear" else TOOL_DOCS
+
+
+def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False,
+                prompt_style: str = "standard"):
     """The twin's tools as an in-process MCP server (`data`) and their allowed names."""
     from claude_agent_sdk import create_sdk_mcp_server, tool
+
+    TOOL_DOCS = _tool_docs(prompt_style)  # noqa: N806 (shadows the module table on purpose)
 
     def text(s: str) -> dict:
         return {"content": [{"type": "text", "text": s}]}
@@ -842,9 +928,18 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
 
 
 def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bool,
-               same_y: bool = False, model_tools: bool = False) -> str:
+               same_y: bool = False, model_tools: bool = False,
+               prompt_style: str = "standard") -> str:
     """The start_queries result for twin k (`{n_train}` is filled in at the call)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
+    if prompt_style == "clear":
+        rule = {"average": RULE_AVERAGE, "individual": RULE_INDIVIDUAL,
+                "consensus": RULE_CONSENSUS}[api.team_rule].format(
+            tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}")
+        return START_QUERIES_CLEAR.format(
+            opening=OPENING_CLEAR.format(n_train="{n_train}", other=api.other(k)),
+            partner_par=PARTNER_CLEAR.format(own=", ".join(labels), other_feats=", ".join(other)),
+            T=api.T, rule_par=rule, cap=api.cap)
     shared = [lab for lab in labels if lab in other]
     fmt = dict(own=", ".join(labels), other=", ".join(other))
     parts = [
@@ -897,10 +992,13 @@ class TwinSession:
         max_continues: int = 10,
         live_dir: str | Path | None = None,
         run: int = 0,
+        prompt_style: str = "standard",
     ) -> None:
         self.name, self.api, self.model, self.effort = name, api, model, effort
         self.max_budget_usd, self.max_continues = max_budget_usd, max_continues
-        self.intro = intro_text(api, name, structure_hint, partner_info, same_y, model_tools)
+        self.prompt_style = prompt_style
+        self.intro = intro_text(api, name, structure_hint, partner_info, same_y, model_tools,
+                                prompt_style)
         self.model_tools = model_tools
         labels = api.labels[name]
         self.system = SYSTEM_TRAIN.format(
@@ -918,6 +1016,15 @@ class TwinSession:
         if api.no_training:
             self.system = SYSTEM_UNTRAINED.format(
                 name=name, d=len(labels), names=", ".join(labels), intro=self.intro)
+        if prompt_style == "clear":
+            if api.no_training or api.elicit or not (model_tools and api.models_in_training):
+                raise ValueError("prompt_style 'clear' needs training cases, model_tools and "
+                                 "models_in_training")
+            self.system = SYSTEM_CLEAR.format(
+                name=name, d=len(labels), names=", ".join(labels), budget=api.budget[name],
+                study_rule=(f"You must study all {api.budget[name]} labelled cases before the "
+                            "queries start." if api.study_all else ""),
+                ex1=labels[0], ex2=labels[1 % len(labels)], ex3=labels[-1])
         self.live = Path(live_dir) if live_dir is not None else None
         self.run_id = run
         self.cost_usd = 0.0
@@ -987,7 +1094,8 @@ class TwinSession:
             ToolUseBlock,
         )
 
-        server, allowed, _ = build_tools(self.api, self.name, self.intro, self.model_tools)
+        server, allowed, _ = build_tools(self.api, self.name, self.intro, self.model_tools,
+                                         self.prompt_style)
 
         async def pre_compact(inp, tool_use_id, ctx):
             ev = {"q": self.api.q[self.name], "time": time.time(),

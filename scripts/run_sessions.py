@@ -113,6 +113,7 @@ def main(argv: list[str] | None = None) -> Path:
                 partner_info=ag["partner_info"],
                 same_y=ag.get("same_y", False),
                 model_tools=ag.get("model_tools", False),
+                prompt_style=ag.get("prompt_style", "standard"),
                 max_budget_usd=ag["max_budget_usd"],
                 max_continues=ag["max_continues"],
                 live_dir=tr,

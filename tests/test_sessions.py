@@ -253,3 +253,23 @@ def test_models_in_training_with_expressions():
     tw = TwinSession("B", api, model_tools=True, same_y=True)
     assert "x3*x4" in tw.system and "include_training" in tw.system
     assert "stay available" in tw.intro
+
+
+def test_clear_prompt_style():
+    """`prompt_style: clear` (LogBook 2026-11-14): no "training phase" anywhere the twin reads,
+    both APIs listed, and the start_queries text names the three freedoms."""
+    from consensus.sessions import TwinSession, _tool_docs
+
+    api = make_api(budget=50, team_rule="individual", models_in_training=True)
+    t = TwinSession("A", api, structure_hint=False, partner_info=True, same_y=True,
+                    model_tools=True, prompt_style="clear")
+    intro = t.intro.format(n_train=50)
+    texts = [t.system, intro, *_tool_docs("clear").values()]
+    assert not any("training phase" in x for x in texts)
+    assert "Data API:" in t.system and "Regression API:" in t.system
+    for s in ("train new models", "such as your features or your predictions",
+              "make use of your partner's features in any way you want",
+              "you both predict the same quantity y"):
+        assert s in intro
+    # The standard style is unchanged.
+    assert "The training phase is over" in intro_text(api, "A", False, True, True, True)
