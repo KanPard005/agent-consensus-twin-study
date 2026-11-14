@@ -13,6 +13,9 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from consensus.sessions import weight_of_advice  # noqa: E402
 
 
 def main(prefixes: list[str]) -> None:
@@ -26,9 +29,16 @@ def main(prefixes: list[str]) -> None:
                 ok = [s for s in recs if not s["failed"]]
                 mse = np.mean([(s["agreed"] - s["y"]) ** 2 for s in ok]) if ok else float("nan")
                 n_att = np.mean([len(s["attempts"]["A"]) for s in recs]) if recs else float("nan")
-                # Weight of advice per twin (records written before it was logged lack "woa").
-                w = {k: [s["woa"][k] for s in recs if "woa" in s and s["woa"][k] == s["woa"][k]]
-                     for k in "AB"}
+                # Weight of advice per twin on the agreed value, from the openings (so it also
+                # works for records written before "woa" was logged).
+                w = {"A": [], "B": []}
+                for s in recs:
+                    if s["failed"]:
+                        continue
+                    for k, o in (("A", "B"), ("B", "A")):
+                        v = weight_of_advice(s["opening"][k], s["opening"][o], s["agreed"])
+                        if v == v:
+                            w[k].append(v)
                 woa_txt = ", WOA A {} / B {}".format(
                     *(f"{np.mean(v):.2f}" if v else "n/a" for v in (w["A"], w["B"]))
                 )
