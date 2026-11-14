@@ -357,3 +357,39 @@ def plot_decisions(out: dict, path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_tools(out: dict, lambdas: list[str], ns: list[int], path: Path) -> None:
+    """Tool use by live-session twins (`scripts/tools_analysis.py`): left, share of queries in
+    which a twin used a tool, against cases studied, one line per lambda; middle, the same by
+    query window (learning to use tools?); right, WOA on own final in queries without a tool."""
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
+    cols = {lam: CAT[i] for i, lam in enumerate(lambdas)}
+    for lam in lambdas:
+        ks = [n for n in ns if f"{lam}_{n}" in out["cells"]]
+        cs = [out["cells"][f"{lam}_{n}"] for n in ks]
+        axes[0].plot(ks, [c["tool"] for c in cs], "o-", color=cols[lam], lw=2, ms=6, label=f"λ = {lam}")
+        for j, (n, c) in enumerate(zip(ks, cs)):
+            axes[1].plot([1, 2, 3], c["tool_by_window"], "o-", color=cols[lam], lw=1 + j, ms=4,
+                         alpha=min(1.0, 0.4 + 0.15 * j), label=f"λ = {lam}, n = {n}")
+        axes[2].errorbar(ks, [c["woa_notool"] for c in cs], yerr=[c["woa_notool_se"] for c in cs],
+                         fmt="o-", color=cols[lam], lw=2, ms=6, capsize=3, label=f"λ = {lam}")
+    for a in (axes[0], axes[2]):
+        a.set_xscale("log")
+        a.set_xticks(ns, [str(v) for v in ns])
+        a.minorticks_off()
+        a.set_xlabel("cases studied (both twins)", fontsize=8, color=INK)
+    axes[0].set_ylabel("share of queries with a tool call", fontsize=8, color=INK)
+    axes[0].set_title("Tool use while answering", fontsize=10, color=INK)
+    axes[1].set_xticks([1, 2, 3], ["1–10", "11–20", "21–30"])
+    axes[1].set_xlabel("queries", fontsize=8, color=INK)
+    axes[1].set_title("Over the run", fontsize=10, color=INK)
+    axes[2].set_ylabel("WOA on own final", fontsize=8, color=INK)
+    axes[2].set_title("Weight on the partner, queries without tools", fontsize=10, color=INK)
+    for a in axes:
+        _style(a)
+    axes[0].legend(fontsize=7, frameon=False)
+    axes[1].legend(fontsize=6, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
