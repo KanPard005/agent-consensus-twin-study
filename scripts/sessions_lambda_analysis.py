@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from consensus.data import build_env  # noqa: E402
+from consensus.sessions import weight_of_advice  # noqa: E402
 from consensus.plotting_overlap import plot_sessions_lambda  # noqa: E402
 from consensus.theory import blend_weights, optimal_head, solo_predictors  # noqa: E402
 from consensus.utils import make_run_dir  # noqa: E402
@@ -90,10 +91,43 @@ def pair_stats(recs: list[dict], br: dict, min_gap: float) -> dict:
     def m(v):
         return float(np.mean(v)) if len(v) else float("nan")
 
+    # Weight of advice per twin, recomputed from the openings (older records lack "woa"):
+    # on the agreed value, and on the twin's own first submission. The two twins' WOA on the
+    # agreed value add up to 1, so |WOA - 0.5| measures how unevenly they conceded, and the
+    # "better twin" check asks whether the twin with the more accurate opening conceded less.
+    w = {"A": [], "B": []}
+    w_first = {"A": [], "B": []}
+    dev, better_held = [], []
+    for s in recs:
+        oA, oB = s["opening"]["A"], s["opening"]["B"]
+        if s["failed"]:
+            continue
+        wa = weight_of_advice(oA, oB, s["agreed"])
+        wb = weight_of_advice(oB, oA, s["agreed"])
+        for k, v in (("A", wa), ("B", wb)):
+            if np.isfinite(v):
+                w[k].append(v)
+        for k, o, po in (("A", oA, oB), ("B", oB, oA)):
+            v = weight_of_advice(o, po, s["attempts"][k][0] if s["attempts"][k] else np.nan)
+            if np.isfinite(v):
+                w_first[k].append(v)
+        if np.isfinite(wa):
+            dev.append(abs(wa - 0.5))
+            if abs(wa - 0.5) > 0.05:  # someone conceded more than half
+                a_better = abs(oA - s["y"]) < abs(oB - s["y"])
+                better_held.append((wa < 0.5) == a_better)
     c = (np.linalg.lstsq(np.array(X), np.array(Y), rcond=None)[0].tolist()
          if len(X) >= 4 else [float("nan")] * 2)
     return dict(
         n_queries=len(recs),
+        woa_A=m(w["A"]),
+        woa_B=m(w["B"]),
+        woa_first_A=m(w_first["A"]),
+        woa_first_B=m(w_first["B"]),
+        woa_dev=m(dev),
+        midpoint=m([d <= 0.05 for d in dev]),
+        better_held=m(better_held),
+        n_uneven=len(better_held),
         c_sum=float(sum(c)),
         c=c,
         outside=m(outside),
@@ -179,6 +213,45 @@ def main(argv: list[str] | None = None) -> Path:
             f"{mean(a, 'movement'):.2f} / {mean(b, 'movement'):.2f} | "
             f"{mean(a, 'agreed_mse'):.2f} / {mean(b, 'agreed_mse'):.2f} | "
             f"{mean(a, 'opening_mse'):.2f} / {mean(b, 'opening_mse'):.2f} | {s400 - s25:+.2f} |"
+        )
+    rows += [
+        "",
+        "Weight of advice per twin (on the agreed value; the pair's two values add up to 1).",
+        "",
+        "| λ | WOA A / B, studied 25 | WOA A / B, studied 400 | WOA on own first submission, 25 / "
+        "400 | at the midpoint (\\|WOA − 0.5\\| ≤ 0.05), 25 / 400 | mean \\|WOA − 0.5\\|, 25 / 400 "
+        "| uneven queries where the more accurate twin conceded less, 25 / 400 "
+        "| scripted S1n WOA, 25 / 400 |",
+        "|" + "---|" * 8,
+    ]
+    for lam in args.lambdas:
+        a, b = stats.get(f"{lam}_E25", {}), stats.get(f"{lam}_E400", {})
+        runs = sorted(set(a) & set(b))
+        if not runs:
+            continue
+
+        def mean(c, key):
+            return float(np.nanmean([c[r][key] for r in runs]))
+
+        def pooled(c):  # better_held pooled over pairs, with its count
+            n = sum(c[r]["n_uneven"] for r in runs)
+            k = sum(c[r]["better_held"] * c[r]["n_uneven"] for r in runs
+                    if c[r]["n_uneven"])
+            return f"{k / n:.0%} of {n}" if n else "—"
+
+        s25, s400 = SCRIPTED.get(lam, (np.nan, np.nan))
+        out["by_lambda"][lam].update(
+            woa25=(mean(a, "woa_A"), mean(a, "woa_B")), woa400=(mean(b, "woa_A"), mean(b, "woa_B")),
+            midpoint25=mean(a, "midpoint"), midpoint400=mean(b, "midpoint"),
+        )
+        rows.append(
+            f"| {lam} | {mean(a, 'woa_A'):.2f} / {mean(a, 'woa_B'):.2f} "
+            f"| {mean(b, 'woa_A'):.2f} / {mean(b, 'woa_B'):.2f} "
+            f"| {(mean(a, 'woa_first_A') + mean(a, 'woa_first_B')) / 2:.2f} / "
+            f"{(mean(b, 'woa_first_A') + mean(b, 'woa_first_B')) / 2:.2f} "
+            f"| {mean(a, 'midpoint'):.0%} / {mean(b, 'midpoint'):.0%} "
+            f"| {mean(a, 'woa_dev'):.2f} / {mean(b, 'woa_dev'):.2f} "
+            f"| {pooled(a)} / {pooled(b)} | {s25:.2f} / {s400:.2f} |"
         )
     run_out = make_run_dir(str(ROOT / "results"), "sessions_lambda")
     (run_out / "stats.json").write_text(json.dumps(out, indent=2))

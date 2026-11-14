@@ -91,6 +91,16 @@ TOOL_DOCS = {
 }
 
 
+def weight_of_advice(own: float, partner: float, value: float, min_gap: float = 0.2) -> float:
+    """(value - own) / (partner - own), clipped to [-0.5, 1.5] as in scripts/onset_llm.py; nan
+    when the openings differ by at most `min_gap` (the ratio is then unstable) or a value is
+    missing. Under consensus the two twins' WOA on the agreed value add up to 1, so the pair
+    mean is 0.5 by construction; each twin's own WOA says who conceded."""
+    if not all(np.isfinite([own, partner, value])) or abs(partner - own) <= min_gap:
+        return float("nan")
+    return float(np.clip((value - own) / (partner - own), -0.5, 1.5))
+
+
 class ConsensusAPI:
     """Shared, thread-safe data API with a consensus rule (see the module docstring).
 
@@ -199,6 +209,21 @@ class ConsensusAPI:
             "failed": bool(self.failed[q]),
             "team": float(self.agreed[q]),
             "messages": [m for m in self.messages if m["q"] == q],
+            # Weight of advice per twin: on the agreed value, and on its own first submission
+            # (what it would have predicted before any resubmission).
+            "woa": {
+                k: weight_of_advice(self.opening[k][q], self.opening[self.other(k)][q],
+                                    self.agreed[q])
+                for k in "AB"
+            },
+            "woa_first": {
+                k: weight_of_advice(
+                    self.opening[k][q],
+                    self.opening[self.other(k)][q],
+                    self.attempts[k][q][0] if self.attempts[k][q] else float("nan"),
+                )
+                for k in "AB"
+            },
         }
 
     # ---- tools -------------------------------------------------------------------------------

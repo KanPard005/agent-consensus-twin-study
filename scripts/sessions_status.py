@@ -26,11 +26,17 @@ def main(prefixes: list[str]) -> None:
                 ok = [s for s in recs if not s["failed"]]
                 mse = np.mean([(s["agreed"] - s["y"]) ** 2 for s in ok]) if ok else float("nan")
                 n_att = np.mean([len(s["attempts"]["A"]) for s in recs]) if recs else float("nan")
+                # Weight of advice per twin (records written before it was logged lack "woa").
+                w = {k: [s["woa"][k] for s in recs if "woa" in s and s["woa"][k] == s["woa"][k]]
+                     for k in "AB"}
+                woa_txt = ", WOA A {} / B {}".format(
+                    *(f"{np.mean(v):.2f}" if v else "n/a" for v in (w["A"], w["B"]))
+                )
                 print(
                     f"{d.parent.parent.name}/{d.parent.name} run {r}: {len(recs)} queries resolved, "
                     f"{sum(s['failed'] for s in recs)} failed, MSE of agreed {mse:.3f}, "
                     f"attempts per query {n_att:.2f}, "
-                    f"messages {sum(len(s['messages']) for s in recs)}"
+                    f"messages {sum(len(s['messages']) for s in recs)}{woa_txt}"
                 )
                 for k in "AB":
                     f = d / f"run{r}_status_{k}.json"

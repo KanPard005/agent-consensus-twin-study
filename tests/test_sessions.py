@@ -110,3 +110,19 @@ def test_tools_handlers_and_intro():
     # Before next_query the query tools refuse politely.
     res = asyncio.run(by["submit_opening"].handler({"y": 1.0}))
     assert res["content"][0]["text"].startswith("Error")
+
+
+def test_weight_of_advice_in_records():
+    from consensus.sessions import weight_of_advice
+
+    assert weight_of_advice(0.0, 2.0, 1.0) == 0.5
+    assert weight_of_advice(0.0, 2.0, 4.0) == 1.5  # clipped
+    assert np.isnan(weight_of_advice(0.0, 0.1, 1.0))  # openings too close
+    api = make_api(T=2)
+    recs = []
+    api.on_query = recs.append
+    run_scripted(api)  # both agree on A's opening: A keeps its opening, B adopts A's
+    for r in recs:
+        if not np.isnan(r["woa"]["A"]):
+            assert r["woa"]["A"] == 0.0 and r["woa"]["B"] == 1.0
+            assert r["woa_first"] == r["woa"]
