@@ -141,3 +141,32 @@ def test_per_twin_budget_and_study_all():
     assert api2.start_queries("A", "intro {n_train}") == "intro 50"
     assert api2.get_training_data("B", 25).startswith("Training cases 1-25 of 25")
     assert api2.get_training_data("B", 25).startswith("You have used all 25")
+
+
+def test_average_team_rule():
+    api = make_api(T=3, team_rule="average")
+    intro = intro_text(api, "A", False, True)
+    assert "average of your two final estimates" in intro and "consensus" not in intro
+    recs = []
+    api.on_query = recs.append
+
+    def twin(k):
+        while not api.get_training_data(k, 25).startswith("You have used"):
+            pass
+        api.start_queries(k, intro)
+        while "run is over" not in api.next_query(k):
+            q = api.q[k]
+            api.submit_opening(k, 1.0 if k == "A" else 3.0)
+            api.read_messages(k)
+            res = api.submit_prediction(k, 1.5 if k == "A" else 3.0)  # A moves a quarter, B holds
+            assert res.startswith("Both finals are in")
+            assert api.submit_prediction(k, 0.0).startswith("Error")
+            if q == api.T - 1:
+                break
+        api.finish(k)
+
+    ths = [threading.Thread(target=twin, args=(k,)) for k in "AB"]
+    [th.start() for th in ths]
+    [th.join(timeout=20) for th in ths]
+    assert api.resolved.all() and np.allclose(api.agreed, 2.25)
+    assert recs[0]["woa"] == {"A": 0.25, "B": 0.0}

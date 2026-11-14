@@ -225,3 +225,40 @@ def plot_entrench_panels(out: dict, lambdas: list[str], ns: list[int], path: Pat
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_avg_sessions(out: dict, lambdas: list[str], ns: list[int], path: Path) -> None:
+    """Live-session twins under the averaging rule (`scripts/avg_sessions_analysis.py`), one
+    column per lambda. Each twin's weight of advice on its own final against cases studied:
+    equal pairs (both studied n), and in mixed pairs the long- and short-trained twin
+    (partner studied 25), with the long twin under the consensus rule (dashed) for comparison."""
+    fig, axes = plt.subplots(1, len(lambdas), figsize=(3.0 * len(lambdas), 3.6), sharey=True)
+    for ax, lam in zip(np.atleast_1d(axes), lambdas):
+        ke = [n for n in ns if f"{lam}_{n}" in out["equal"]]
+        if ke:
+            ax.errorbar(ke, [out["equal"][f"{lam}_{n}"]["woa"] for n in ke],
+                        yerr=[out["equal"][f"{lam}_{n}"]["woa_se"] for n in ke], fmt="o-",
+                        color=CAT[0], lw=2, ms=6, capsize=3, label="equal pairs")
+        km = [n for n in ns if f"{lam}_{n}" in out["mixed"]]
+        if km:
+            mx = [out["mixed"][f"{lam}_{n}"] for n in km]
+            ax.errorbar(km, [c["woa_long"] for c in mx], yerr=[c["woa_long_se"] for c in mx],
+                        fmt="o-", color=CAT[1], lw=2, ms=6, capsize=3, label="long-trained twin")
+            ax.errorbar(km, [c["woa_short"] for c in mx], yerr=[c["woa_short_se"] for c in mx],
+                        fmt="o-", color=CAT[2], lw=2, ms=6, capsize=3, label="its partner (25)")
+            ax.plot(km, [c["woa_long_consensus"] for c in mx], "--", color=CAT[1], lw=1,
+                    label="long twin, consensus rule")
+        ax.set_xscale("log")
+        ax.set_xticks(ns, [str(v) for v in ns])
+        ax.minorticks_off()
+        ax.set_xlabel("cases studied (both / the long twin)", fontsize=8, color=INK)
+        ax.set_title(f"λ = {lam}", fontsize=10, color=INK)
+        _style(ax)
+    axes[0].set_ylabel("weight of advice on own final\n(0 = kept own opening)", fontsize=8,
+                       color=INK)
+    axes[-1].legend(fontsize=7, frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5))
+    fig.suptitle("Averaging rule: each twin submits its own final after talking", fontsize=10,
+                 color=INK)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)

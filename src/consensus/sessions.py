@@ -67,13 +67,25 @@ so you both work on the same case);
 - then you and your partner can communicate freely: send_message sends a message, and \
 read_messages shows your partner's opening and new messages (it waits until your partner sends \
 something new, submits a prediction, or is also waiting);
+{rule_par} regress can now also use \
+own_opening and partner_opening (your and your partner's openings, over past queries). You can \
+make at most {cap} tool calls per query. Call next_query to begin."""
+
+# The team rule, in the start_queries text: the twins must agree ("consensus"), or each submits
+# its own final and the team's prediction is their average ("average").
+RULE_CONSENSUS = """\
 - you must reach a consensus: submit_prediction is accepted only when both of you submit \
 predictions within {tol} of each other, and then the true y is revealed to both of you. If your \
 predictions differ, you are both told the other's prediction and must talk and submit again. \
 After {max_attempts} failed attempts the query fails and scores a penalty of {penalty}.
-The team is scored by the squared error of the agreed prediction. regress can now also use \
-own_opening and partner_opening (your and your partner's openings, over past queries). You can \
-make at most {cap} tool calls per query. Call next_query to begin."""
+The team is scored by the squared error of the agreed prediction."""
+
+RULE_AVERAGE = """\
+- when you are ready, submit_prediction records your own final estimate of y (once per query). \
+It waits until your partner has also submitted its final; then both finals, the team's \
+prediction and the true y are revealed to both of you.
+The team's prediction is the average of your two final estimates, and the team is scored by its \
+squared error."""
 
 TOOL_DOCS = {
     "get_training_data": "Get the next n labelled training cases (n from 1 to 25).",
@@ -127,7 +139,11 @@ class ConsensusAPI:
         max_chars: int = 2000,
         cap: int = 25,
         study_all: bool = False,
+        team_rule: str = "consensus",
     ) -> None:
+        if team_rule not in ("consensus", "average"):
+            raise ValueError(f"team_rule must be 'consensus' or 'average', got {team_rule!r}")
+        self.team_rule = team_rule
         self.cond = threading.Condition()
         # Training budget per twin (an int for both, or {"A": n_A, "B": n_B}); with `study_all`
         # a twin must pull its whole budget before start_queries (the entrenchment manipulation).
@@ -215,9 +231,13 @@ class ConsensusAPI:
             "messages": [m for m in self.messages if m["q"] == q],
             # Weight of advice per twin: on the agreed value, and on its own first submission
             # (what it would have predicted before any resubmission).
-            "woa": {
-                k: weight_of_advice(self.opening[k][q], self.opening[self.other(k)][q],
-                                    self.agreed[q])
+            "woa": {  # on the agreed value (consensus) or the twin's own final (average)
+                k: weight_of_advice(
+                    self.opening[k][q],
+                    self.opening[self.other(k)][q],
+                    (self.attempts[k][q][-1] if self.attempts[k][q] else float("nan"))
+                    if self.team_rule == "average" else self.agreed[q],
+                )
                 for k in "AB"
             },
             "woa_first": {
@@ -380,6 +400,8 @@ class ConsensusAPI:
             q, o = self.q[k], self.other(k)
             if np.isnan(self.opening[k][q]):
                 return "Error: submit your opening first."
+            if self.team_rule == "average" and self.attempts[k][q]:
+                return "Error: you already submitted your final for this query."
             self.attempts[k][q].append(float(y))
             a = len(self.attempts[k][q])  # attempt number
             self.waiting[k] = "submit"
@@ -399,6 +421,13 @@ class ConsensusAPI:
                     if q == self.T - 1
                     else " Call next_query for the next case."
                 )
+                if self.team_rule == "average":
+                    pf = self.attempts[o][q][0] if self.attempts[o][q] else float("nan")
+                    return (
+                        f"Both finals are in: yours {float(y):.3f}, your partner's {pf:.3f}; team "
+                        f"(average) {self.agreed[q]:.3f}. The true y was {self.y[q]:.3f}; team "
+                        f"squared error {(self.agreed[q] - self.y[q]) ** 2:.3f}." + tail
+                    )
                 if self.failed[q]:
                     return (
                         f"No consensus after {self.max_attempts} attempts: query {q + 1} failed "
@@ -418,7 +447,10 @@ class ConsensusAPI:
         """Called (under the lock) when both twins have made attempt a, or the partner is gone."""
         sub = {k: self.attempts[k][q][a - 1] if len(self.attempts[k][q]) >= a else None
                for k in "AB"}
-        if sub["A"] is None or sub["B"] is None:  # the partner is gone: accept the submission
+        if self.team_rule == "average":  # each twin's own final; the team averages them
+            vals = [v for v in sub.values() if v is not None]
+            self.agreed[q], self.resolved[q] = float(np.mean(vals)), True
+        elif sub["A"] is None or sub["B"] is None:  # the partner is gone: accept the submission
             v = sub["A"] if sub["A"] is not None else sub["B"]
             self.agreed[q], self.resolved[q] = v, True
         elif abs(sub["A"] - sub["B"]) <= self.tol:
@@ -508,7 +540,11 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         parts.append(PARTNER_INFO_LINE)
     if structure_hint:
         parts.append(STRUCTURE_HINT)
+    rule = (RULE_AVERAGE if api.team_rule == "average" else RULE_CONSENSUS).format(
+        tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}"
+    )
     return START_QUERIES.format(
+        rule_par=rule,
         n_train="{n_train}",
         other=api.other(k),
         partner_par=" ".join(parts),

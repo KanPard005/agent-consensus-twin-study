@@ -43,6 +43,9 @@ def main() -> None:
     p.add_argument("--ns", nargs="+", type=int, default=[25, 100, 400, 1600])
     p.add_argument("--short", type=int, default=25)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--config", default=CONFIG)
+    p.add_argument("--prefix", default="llm_haiku_sessions_entrench",
+                   help="experiment folders: <prefix>_lam<lambda>_<cell>")
     args = p.parse_args()
     jobs = []
     # Pair index outermost, so early results cover every cell.
@@ -54,12 +57,12 @@ def main() -> None:
                     cells.append((f"mix{n}v{args.short}",
                                   [f"agent.budget_long={n}", f"agent.budget_short={args.short}"]))
                 for cell, sets in cells:
-                    exp = f"llm_haiku_sessions_entrench_lam{lam}_{cell}"
+                    exp = f"{args.prefix}_lam{lam}_{cell}"
                     if done(exp, r):
                         continue
                     jobs.append((exp, r, [f"env.lambda_xz={lam}", f"first_run={r}", "n_runs=1",
                                           f"experiment={exp}", *sets],
-                                 ROOT / "results" / "logs" / f"entrench_{cell}_lam{lam}_r{r}.log"))
+                                 ROOT / "results" / "logs" / f"{args.prefix}_{cell}_lam{lam}_r{r}.log"))
     print(f"{len(jobs)} jobs, {args.jobs} at a time")
     if args.dry_run:
         for j in jobs[:5]:
@@ -67,11 +70,13 @@ def main() -> None:
         return
     (ROOT / "results" / "logs").mkdir(parents=True, exist_ok=True)
 
+    config = args.config
+
     def run(job):
         exp, r, sets, logf = job
         t0 = time.time()
         with open(logf, "w") as f:
-            code = subprocess.call([PY, "scripts/run_sessions.py", CONFIG, "--set", *sets],
+            code = subprocess.call([PY, "scripts/run_sessions.py", config, "--set", *sets],
                                    cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
         print(f"{time.strftime('%H:%M:%S')} {exp} pair {r}: exit {code}, "
               f"{(time.time() - t0) / 60:.1f} min", flush=True)

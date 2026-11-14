@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> Path:
             ag["labels"],
             budget=budget,
             study_all=ag.get("study_all", False),
+            team_rule=ag.get("team_rule", "consensus"),
             tol=ag["tol"],
             max_attempts=ag["max_attempts"],
             penalty=ag["penalty"],
