@@ -6,6 +6,7 @@ import pytest
 from consensus.data import LinearTwinEnv, block_covariance
 from consensus.theory import (
     agreement_path,
+    asymmetric_limits,
     blend_weights,
     predictor_mse,
     protocol_benchmarks,
@@ -117,3 +118,34 @@ def test_controlled_without_rotation_is_paired():
     env = LinearTwinEnv.from_config(cfg, np.random.default_rng(0))
     np.testing.assert_allclose(env.Sigma, block_covariance(3, 3, 0.5))
     np.testing.assert_allclose(env.w_A, np.ones(3) / np.sqrt(3))
+
+
+@pytest.mark.parametrize("weak", ["A", "B"])
+@pytest.mark.parametrize("alpha", [0.0, 0.25, 0.5, 1.0])
+@pytest.mark.parametrize("lam", [0.0, 0.5, 0.8])
+def test_asymmetric_limits_match_numerics(lam, alpha, weak):
+    """Closed forms of `asymmetric_limits` against the generic population formulas."""
+    cfg = dict(d_A=3, d_B=3, cov="controlled", lambda_xz=lam, alpha=alpha, weak=weak,
+               sigma=SIGMA_NOISE)
+    env = LinearTwinEnv.from_config(cfg, np.random.default_rng(1))
+    S, w = env.Sigma, env.w
+    lim = asymmetric_limits(lam, alpha, SIGMA_NOISE)
+    strong = "B" if weak == "A" else "A"
+    assert w @ S @ w == pytest.approx(lim["signal"])
+    # schur_excess(agent) is the excess of that agent's solo predictor.
+    assert schur_excess(S, w, 3, strong) == pytest.approx(lim["excess_strong"], abs=1e-10)
+    assert schur_excess(S, w, 3, weak) == pytest.approx(lim["excess_weak"], abs=1e-10)
+    a, b = solo_predictors(S, w, 3)
+    assert (a - b) @ S @ (a - b) == pytest.approx(lim["disagreement"], abs=1e-10)
+    if alpha + lam > 0:
+        ps, pw = (a, b) if strong == "A" else (b, a)
+        coef = blend_weights(S, w, ps, pw)
+        mix = coef[0] * ps + coef[1] * pw  # the blend recovers the full predictor
+        assert predictor_mse(mix, S, w, SIGMA_NOISE) == pytest.approx(SIGMA_NOISE**2)
+        if alpha > 0:
+            np.testing.assert_allclose(coef, [lim["beta_strong"], lim["beta_weak"]], atol=1e-8)
+        # Best convex weight on the partner, from the population moments.
+        for own, partner, key in ((ps, pw, "convex_strong"), (pw, ps, "convex_weak")):
+            dlt = partner - own
+            w_conv = ((w - own) @ S @ dlt) / (dlt @ S @ dlt)
+            assert w_conv == pytest.approx(lim[key], abs=1e-10)

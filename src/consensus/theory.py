@@ -204,3 +204,38 @@ def optimal_head(
         m_row[:d_A] = theta_partner
     M = np.vstack([E_own, m_row])
     return np.linalg.pinv(M @ Sigma @ M.T, hermitian=True) @ (M @ Sigma @ w)
+
+
+def asymmetric_limits(lam: float, alpha: float, sigma: float = 0.0) -> dict[str, float]:
+    """Closed-form population limits of the asymmetric controlled design (LogBook 2026-11-14).
+
+    Sigma_XZ = lam U V^T, s_strong = 1_d / sqrt(d), s_weak = alpha 1_d / sqrt(d) (align = 1, raw
+    weights). With A = 1 + lam alpha and B = alpha + lam (the strong and weak solo predictors'
+    coefficients along s):
+
+    - signal variance 1 + alpha^2 + 2 lam alpha;
+    - solo excess MSE: strong alpha^2 (1 - lam^2), weak (1 - lam^2), so their ratio is alpha^2;
+    - disagreement E[(yhat_s - yhat_w)^2] = (1 - lam^2)(1 + alpha^2 + 2 lam alpha);
+    - optimal blend y* = yhat_s / A + alpha yhat_w / B (zero excess: it recovers the full
+      predictor); at lam = 0 it is the sum for every alpha.
+
+    `convex_*` is the best weight on the partner for a twin restricted to convex combinations
+    (1 - w) own + w partner of the two openings, w = Cov(y - own, partner - own) / Var(partner - own):
+    strong alpha (alpha + lam) / signal, weak (1 + lam alpha) / signal (they add up to 1). It is
+    the reference for the weight of advice; the optimal unrestricted blend is the `beta_*` pair.
+    """
+    A, B = 1.0 + lam * alpha, alpha + lam
+    b_s = 1.0 / A
+    b_w = alpha / B if B != 0 else 0.0
+    signal = 1.0 + alpha**2 + 2.0 * lam * alpha
+    return dict(
+        signal=signal,
+        mse_full=sigma**2,
+        excess_strong=alpha**2 * (1.0 - lam**2),
+        excess_weak=1.0 - lam**2,
+        disagreement=(1.0 - lam**2) * signal,
+        beta_strong=b_s,
+        beta_weak=b_w,
+        convex_strong=alpha * B / signal,
+        convex_weak=A / signal,
+    )

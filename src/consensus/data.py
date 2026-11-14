@@ -53,6 +53,8 @@ def controlled_env_parts(
     rotate: bool = True,
     align: float = 1.0,
     normalize: bool = False,
+    alpha: float = 1.0,
+    weak: str = "B",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Covariance and weights of the controlled design (LogBook note 2026-11-11, "More controlled
     experiment on differences").
@@ -81,6 +83,14 @@ def controlled_env_parts(
         c = s_A' s_B, +1 (aligned) or -1 (opposed).
     normalize : bool
         Scale the weights so that Var(<x, w>) = 1.
+    alpha : float
+        Asymmetric information (LogBook 2026-11-14): the `weak` twin's weights are multiplied by
+        alpha, so s_strong = 1_d / sqrt(d) and s_weak = alpha * align * 1_d / sqrt(d). With
+        align = 1 the population solo excess errors are alpha^2 (1 - lambda^2) for the strong twin
+        and (1 - lambda^2) for the weak one (see `consensus.theory.asymmetric_limits`); alpha = 0
+        with lambda > 0 nests the weak twin's information inside the strong one's.
+    weak : "A" or "B"
+        Which twin gets the scaled weights (alternated across pairs to balance label effects).
 
     Returns
     -------
@@ -93,9 +103,16 @@ def controlled_env_parts(
     V = random_orthogonal(d, rng) if rotate else np.eye(d)
     C = lambda_xz * U @ V.T
     Sigma = np.block([[np.eye(d), C], [C.T, np.eye(d)]])
+    if weak not in ("A", "B"):
+        raise ValueError(f"weak must be 'A' or 'B', got {weak!r}")
     s = np.ones(d) / np.sqrt(d)
-    scale = 1.0 / np.sqrt(2.0 * (1.0 + align * lambda_xz)) if normalize else 1.0
-    return Sigma, scale * U @ s, scale * align * V @ s
+    # Coefficients of the two weight vectors along s (in the U and V bases).
+    c_A = alpha if weak == "A" else 1.0
+    c_B = align * (alpha if weak == "B" else 1.0)
+    # Signal variance ||s_A||^2 + ||s_B||^2 + 2 lambda s_A's_B; equals 2 (1 + align lambda) at alpha = 1.
+    var = c_A**2 + c_B**2 + 2.0 * lambda_xz * c_A * c_B
+    scale = 1.0 / np.sqrt(var) if normalize else 1.0
+    return Sigma, scale * c_A * U @ s, scale * c_B * V @ s
 
 
 def overlap_env_parts(
@@ -197,7 +214,7 @@ class LinearTwinEnv:
         Explicit weights can be given as lists under `w_A` / `w_B` instead.
 
         `cov: controlled` uses `controlled_env_parts` instead (keys `lambda_xz`, `rotate`, `align`,
-        `normalize`; needs d_A = d_B; `rho`, `norm_*` and explicit weights are ignored).
+        `normalize`, `alpha`, `weak`; needs d_A = d_B; `rho`, `norm_*` and explicit weights are ignored).
 
         `cov: overlap` uses `overlap_env_parts` (keys `overlap`, `w`): independent features, some
         of them seen by both twins.
@@ -216,6 +233,8 @@ class LinearTwinEnv:
                 rotate=cfg.get("rotate", True),
                 align=cfg.get("align", 1.0),
                 normalize=cfg.get("normalize", False),
+                alpha=cfg.get("alpha", 1.0),
+                weak=cfg.get("weak", "B"),
             )
             return cls(w_A=w_A, w_B=w_B, Sigma=Sigma, sigma=cfg["sigma"])
         w_A = (

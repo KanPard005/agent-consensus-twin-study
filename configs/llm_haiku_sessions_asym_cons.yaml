@@ -1,0 +1,50 @@
+# Asymmetric information (LogBook 2026-11-14): the controlled-lambda design with the weak twin's
+# weights scaled by alpha (env.alpha; s_strong = 1_d/sqrt(d), s_weak = alpha 1_d/sqrt(d)). The weak
+# twin alternates B / A by pair (env.weak, set by launch_grid.py). Population limits:
+# consensus.theory.asymmetric_limits (excess MSE strong / weak = alpha^2 at every lambda).
+# Same twins as configs/llm_haiku_sessions_samey2.yaml (same-y sentence, model instances from
+# training on, partner_info), equal pairs n = 400.
+# Launch: launch_grid.py --config <this> --prefix <experiment> --no-mixed --ns 400
+#         --lambdas 0.0 0.5 --alphas 0.0 0.25 0.5 1.0
+# This file: consensus rule (the twins must agree on one prediction).
+experiment: llm_haiku_sessions_asym_cons
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  alpha: 1.0
+  weak: B
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 25
+  study_all: true
+  team_rule: consensus      # the pair must agree on one prediction
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40                   # tool calls per query (the model tools need more)
+  structure_hint: false
+  partner_info: true
+  same_y: true
+  model_tools: true
+  models_in_training: true  # instances from the training phase on, with expression columns
+  max_budget_usd: 3.0
+  max_continues: 10
