@@ -44,6 +44,7 @@ def main() -> None:
     p.add_argument("--short", type=int, default=25)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--config", default=CONFIG)
+    p.add_argument("--no-mixed", action="store_true", help="equal pairs only")
     p.add_argument("--prefix", default="llm_haiku_sessions_entrench",
                    help="experiment folders: <prefix>_lam<lambda>_<cell>")
     args = p.parse_args()
@@ -53,7 +54,7 @@ def main() -> None:
         for lam in args.lambdas:
             for n in args.ns:
                 cells = [(f"eq{n}", [f"agent.budget={n}"])]
-                if n > args.short:
+                if n > args.short and not args.no_mixed:
                     cells.append((f"mix{n}v{args.short}",
                                   [f"agent.budget_long={n}", f"agent.budget_short={args.short}"]))
                 for cell, sets in cells:

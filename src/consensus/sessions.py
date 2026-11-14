@@ -69,7 +69,7 @@ read_messages shows your partner's opening and new messages (it waits until your
 something new, submits a prediction, or is also waiting);
 {rule_par} regress can now also use \
 own_opening and partner_opening (your and your partner's openings, over past queries). You can \
-make at most {cap} tool calls per query. Call next_query to begin."""
+make at most {cap} tool calls per query.{model_par} Call next_query to begin."""
 
 # The team rule, in the start_queries text: the twins must agree ("consensus"), or each submits
 # its own final and the team's prediction is their average ("average").
@@ -96,6 +96,19 @@ revealed to both of you.
 You are scored by the squared error of your own final estimate, and your partner by the squared \
 error of its own."""
 
+# `same_y`: say outright that both twins predict the same quantity (true at every lambda, unlike
+# the structure hint). Nothing is said about how to use the partner's estimate or features.
+SAME_Y_LINE = "You and your partner predict the same quantity y for each case."
+
+# `model_tools`: fresh least-squares model instances the twin can start at any time, with any
+# columns. Described only by what they do; nothing says which columns to use.
+MODEL_PAR = """ You can also start fresh model instances at any time: new_model starts an empty \
+least-squares model with a name and the columns you choose (values for columns named after your \
+features, own_opening and partner_opening are filled in automatically; for any other column you \
+give the value); add_case adds the current case to one of your models (its y is added once it is \
+revealed); fit_model fits one of your models on the cases added to it and predicts the current \
+case."""
+
 TOOL_DOCS = {
     "get_training_data": "Get the next n labelled training cases (n from 1 to 25).",
     "regress": (
@@ -109,6 +122,19 @@ TOOL_DOCS = {
     "send_message": "Query phase: send a message (see the instructions given at start_queries).",
     "read_messages": "Query phase: read new messages (see the instructions given at start_queries).",
     "submit_prediction": "Query phase: submit your prediction for the current case.",
+    "new_model": (
+        "Query phase: start a fresh, empty least-squares model instance with a name and the "
+        "columns you choose (see the instructions given at start_queries)."
+    ),
+    "add_case": (
+        "Query phase: add the current case to one of your model instances; give the values of "
+        "columns that are not filled in automatically in `values` (a JSON object)."
+    ),
+    "fit_model": (
+        "Query phase: fit one of your model instances on the cases added to it (with their "
+        "revealed y) and predict the current case; give values of columns that are not filled "
+        "in automatically in `values`."
+    ),
 }
 
 
@@ -180,6 +206,9 @@ class ConsensusAPI:
         self.waiting = {k: None for k in "AB"}  # "read" | "submit" | None
         self.messages: list[dict] = []
         self.on_query = None  # fn(record), called once per resolved query
+        # Fresh model instances per twin: {name: {"columns": [...], "rows": [...] (with y),
+        # "pending": {q: row} (y not revealed yet), "created_q": int}}.
+        self.models = {k: {} for k in "AB"}
         self.on_call = None  # fn(twin, record), called after every tool call
 
     @staticmethod
@@ -240,6 +269,9 @@ class ConsensusAPI:
             "failed": bool(self.failed[q]),
             "team": float(self.agreed[q]),
             "messages": [m for m in self.messages if m["q"] == q],
+            "models": {k: {n: {"columns": m["columns"], "n_rows": len(m["rows"]),
+                               "created_q": m["created_q"]}
+                           for n, m in self.models[k].items()} for k in "AB"},
             # Weight of advice per twin: on the agreed value, and on its own first submission
             # (what it would have predicted before any resubmission).
             "woa": {  # on the agreed value (consensus) or the twin's own final (average)
@@ -477,6 +509,7 @@ class ConsensusAPI:
         elif a >= self.max_attempts:
             self.failed[q], self.resolved[q] = True, True
         if self.resolved[q]:
+            self._attach_y(q)
             self.cond.notify_all()
             if self.on_query is not None:
                 self.on_query(self.record(q))
@@ -486,8 +519,87 @@ class ConsensusAPI:
             self.phase[k] = "done"
             self.cond.notify_all()
 
+    # ---- fresh model instances (model_tools) -----------------------------------------------
+    def _auto_values(self, k: str, q: int) -> dict:
+        """Values the API fills in for twin k at query q: its features, its opening, and the
+        partner's opening once both have opened (as read_messages would show it)."""
+        vals = dict(zip(self.labels[k], map(float, self.qx[k][q])))
+        if not np.isnan(self.opening[k][q]):
+            vals["own_opening"] = float(self.opening[k][q])
+            po = self.opening[self.other(k)][q]
+            if not np.isnan(po):
+                vals["partner_opening"] = float(po)
+        return vals
 
-def build_tools(api: ConsensusAPI, k: str, intro: str):
+    def new_model(self, k: str, name: str, columns: list[str]) -> str:
+        with self.cond:
+            if self.phase[k] != "query":
+                return "Error: model instances are available in the query phase."
+            cols = list(dict.fromkeys(str(c) for c in columns))
+            if not name or not cols or len(cols) > 30:
+                return "Error: give a name and 1 to 30 columns."
+            replaced = " (replacing the old one)" if name in self.models[k] else ""
+            self.models[k][name] = {"columns": cols, "rows": [], "pending": {},
+                                    "created_q": self.q[k]}
+            auto = [c for c in cols if c in self.labels[k] or c in ("own_opening",
+                                                                     "partner_opening")]
+            return (f"Model '{name}' created{replaced} with columns {', '.join(cols)}; it has no "
+                    f"data yet. Filled in automatically: {', '.join(auto) or 'none'}.")
+
+    def _row(self, k: str, name: str, values: dict) -> tuple[dict | None, str]:
+        q = self.q[k]
+        m = self.models[k].get(name)
+        if m is None:
+            return None, f"Error: no model named '{name}' (create it with new_model)."
+        auto = self._auto_values(k, q)
+        row, missing = {}, []
+        for c in m["columns"]:
+            if c in auto:
+                row[c] = auto[c]
+            elif c in values:
+                try:
+                    row[c] = float(values[c])
+                except (TypeError, ValueError):
+                    return None, f"Error: the value of {c} must be a number."
+            else:
+                missing.append(c)
+        if missing:
+            return None, f"Error: give values for {', '.join(missing)}."
+        return row, ""
+
+    def add_case(self, k: str, name: str, values: dict) -> str:
+        with self.cond:
+            if err := self._in_query(k):
+                return err
+            row, err = self._row(k, name, values or {})
+            if row is None:
+                return err
+            m = self.models[k][name]
+            m["pending"][self.q[k]] = row
+            return (f"Case {self.q[k] + 1} added to '{name}' ({len(m['rows'])} cases with y so "
+                    "far); its y will be added when it is revealed.")
+
+    def fit_model(self, k: str, name: str, values: dict) -> str:
+        with self.cond:
+            m = self.models[k].get(name)
+            if m is None:
+                return f"Error: no model named '{name}' (create it with new_model)."
+            current = None
+            if self.phase[k] == "query" and 0 <= self.q[k] < self.T and not self.resolved[self.q[k]]:
+                row, _ = self._row(k, name, values or {})
+                current = row
+            return regress(m["rows"], m["columns"], current, rows=f"cases in '{name}'")
+
+    def _attach_y(self, q: int) -> None:
+        """Move each model's pending row for query q into its data, with the revealed y."""
+        for k in "AB":
+            for m in self.models[k].values():
+                row = m["pending"].pop(q, None)
+                if row is not None:
+                    m["rows"].append({**row, "y": float(self.y[q])})
+
+
+def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False):
     """The twin's tools as an in-process MCP server (`data`) and their allowed names."""
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -541,11 +653,38 @@ def build_tools(api: ConsensusAPI, k: str, intro: str):
 
     tools = [get_training_data, regress_tool, start_queries, next_query, submit_opening,
              send_message, read_messages, submit_prediction]
+    if model_tools:
+        val_schema = {"type": "object", "additionalProperties": {"type": "number"}}
+
+        @tool("new_model", TOOL_DOCS["new_model"],
+              {**obj, "properties": {"name": {"type": "string"},
+                                     "columns": {"type": "array", "items": {"type": "string"}}},
+               "required": ["name", "columns"]})
+        async def new_model(args):
+            return await run("new_model", args, lambda: api.new_model(
+                k, str(args.get("name", "")), list(args.get("columns", []))))
+
+        @tool("add_case", TOOL_DOCS["add_case"],
+              {**obj, "properties": {"name": {"type": "string"}, "values": val_schema},
+               "required": ["name"]})
+        async def add_case(args):
+            return await run("add_case", args, lambda: api.add_case(
+                k, str(args.get("name", "")), dict(args.get("values") or {})))
+
+        @tool("fit_model", TOOL_DOCS["fit_model"],
+              {**obj, "properties": {"name": {"type": "string"}, "values": val_schema},
+               "required": ["name"]})
+        async def fit_model(args):
+            return await run("fit_model", args, lambda: api.fit_model(
+                k, str(args.get("name", "")), dict(args.get("values") or {})))
+
+        tools += [new_model, add_case, fit_model]
     server = create_sdk_mcp_server("data", tools=tools)
     return server, [f"mcp__data__{t.name}" for t in tools], tools
 
 
-def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bool) -> str:
+def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bool,
+               same_y: bool = False, model_tools: bool = False) -> str:
     """The start_queries result for twin k (`{n_train}` is filled in at the call)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
     shared = [lab for lab in labels if lab in other]
@@ -555,6 +694,8 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         if shared
         else NO_OVERLAP_FEATURE_LINE.format(**fmt)
     ]
+    if same_y:
+        parts.append(SAME_Y_LINE)
     if partner_info:
         parts.append(PARTNER_INFO_LINE)
     if structure_hint:
@@ -573,6 +714,7 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         max_attempts=api.max_attempts,
         penalty=f"{api.penalty:g}",
         cap=api.cap,
+        model_par=MODEL_PAR if model_tools else "",
     )
 
 
@@ -587,6 +729,8 @@ class TwinSession:
         effort: str = "low",
         structure_hint: bool = True,
         partner_info: bool = True,
+        same_y: bool = False,
+        model_tools: bool = False,
         max_budget_usd: float = 5.0,
         max_continues: int = 10,
         live_dir: str | Path | None = None,
@@ -594,7 +738,8 @@ class TwinSession:
     ) -> None:
         self.name, self.api, self.model, self.effort = name, api, model, effort
         self.max_budget_usd, self.max_continues = max_budget_usd, max_continues
-        self.intro = intro_text(api, name, structure_hint, partner_info)
+        self.intro = intro_text(api, name, structure_hint, partner_info, same_y, model_tools)
+        self.model_tools = model_tools
         labels = api.labels[name]
         self.system = SYSTEM_TRAIN.format(
             name=name, d=len(labels), names=", ".join(labels), budget=api.budget[name],
@@ -672,7 +817,7 @@ class TwinSession:
             ToolUseBlock,
         )
 
-        server, allowed, _ = build_tools(self.api, self.name, self.intro)
+        server, allowed, _ = build_tools(self.api, self.name, self.intro, self.model_tools)
 
         async def pre_compact(inp, tool_use_id, ctx):
             ev = {"q": self.api.q[self.name], "time": time.time(),

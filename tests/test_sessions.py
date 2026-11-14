@@ -195,3 +195,38 @@ def test_individual_scoring_rule():
     [th.join(timeout=20) for th in ths]
     assert api.resolved.all() and "your squared error" in out["A"][0]
     assert api.record(0)["woa"] == {"A": 0.5, "B": 0.5}
+
+
+def test_same_y_and_model_instances():
+    api = make_api(T=2, team_rule="individual")
+    intro = intro_text(api, "A", False, True, same_y=True, model_tools=True)
+    assert "predict the same quantity y" in intro and "new_model" in intro
+    assert "partner's features" not in intro.split("new_model")[1]  # no hint on what to use
+    server, allowed, tools = build_tools(api, "A", intro, model_tools=True)
+    assert "mcp__data__new_model" in allowed and len(allowed) == 11
+    for k in "AB":
+        api.phase[k] = "query"
+    seen = {}
+
+    def twin(k):
+        api.next_query(k)
+        api.submit_opening(k, 1.0 if k == "A" else 2.0)
+        if k == "A":
+            seen["new"] = api.new_model("A", "both", ["x1", "partner_opening", "b1"])
+            seen["missing"] = api.add_case("A", "both", {})
+            api.read_messages("A")
+            seen["add"] = api.add_case("A", "both", {"b1": 0.3})
+        else:
+            api.send_message("B", "b1 is 0.3")
+        api.submit_prediction(k, 1.5)
+        api.next_query(k)  # query 2: A's model now has one case with y
+
+    ths = [threading.Thread(target=twin, args=(k,)) for k in "AB"]
+    [th.start() for th in ths]
+    [th.join(timeout=20) for th in ths]
+    assert "no data yet" in seen["new"] and "Filled in automatically: x1, partner_opening" in seen["new"]
+    assert seen["missing"].startswith("Error") and "b1" in seen["missing"]
+    m = api.models["A"]["both"]
+    assert len(m["rows"]) == 1 and m["rows"][0]["b1"] == 0.3 and m["rows"][0]["y"] == api.y[0]
+    assert m["rows"][0]["partner_opening"] == 2.0
+    assert api.record(0)["models"]["A"]["both"]["n_rows"] == 1
