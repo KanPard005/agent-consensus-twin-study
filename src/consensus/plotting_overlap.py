@@ -227,7 +227,9 @@ def plot_entrench_panels(out: dict, lambdas: list[str], ns: list[int], path: Pat
     plt.close(fig)
 
 
-def plot_avg_sessions(out: dict, lambdas: list[str], ns: list[int], path: Path) -> None:
+def plot_avg_sessions(out: dict, lambdas: list[str], ns: list[int], path: Path,
+                      title: str = "Averaging rule: each twin submits its own final after talking",
+                      ) -> None:
     """Live-session twins under the averaging rule (`scripts/avg_sessions_analysis.py`), one
     column per lambda. Each twin's weight of advice on its own final against cases studied:
     equal pairs (both studied n), and in mixed pairs the long- and short-trained twin
@@ -257,8 +259,55 @@ def plot_avg_sessions(out: dict, lambdas: list[str], ns: list[int], path: Path) 
     axes[0].set_ylabel("weight of advice on own final\n(0 = kept own opening)", fontsize=8,
                        color=INK)
     axes[-1].legend(fontsize=7, frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5))
-    fig.suptitle("Averaging rule: each twin submits its own final after talking", fontsize=10,
-                 color=INK)
+    fig.suptitle(title, fontsize=10, color=INK)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def plot_rules_comparison(stats: dict, rational: dict, lambdas: list[str], ns: list[int],
+                          path: Path) -> None:
+    """The three team rules side by side, one column per lambda (LogBook 2026-11-13).
+
+    Top: equal pairs, each twin's weight of advice on its own final under the averaging and
+    the individual rule (under consensus it is 0.5 by construction, so not shown). Bottom: mixed
+    pairs, the long-trained twin's weight of advice under each rule, with the rational partner
+    weight (dashed). `stats` = {rule: stats dict of avg_sessions_analysis / entrench analysis}."""
+    colors = {"consensus": CAT[0], "average": CAT[1], "individual": CAT[2]}
+    labels = {"consensus": "must agree", "average": "own final, team = average",
+              "individual": "own final, scored individually"}
+    fig, axes = plt.subplots(2, len(lambdas), figsize=(3.0 * len(lambdas), 6.2), sharex=True,
+                             sharey="row")
+    for j, lam in enumerate(lambdas):
+        ax, bx = axes[0, j], axes[1, j]
+        for rule in ("average", "individual"):
+            eq = stats[rule]["equal"]
+            ke = [n for n in ns if f"{lam}_{n}" in eq]
+            ax.errorbar(ke, [eq[f"{lam}_{n}"]["woa"] for n in ke],
+                        yerr=[eq[f"{lam}_{n}"]["woa_se"] for n in ke], fmt="o-",
+                        color=colors[rule], lw=2, ms=5, capsize=3, label=labels[rule])
+        for rule in ("consensus", "average", "individual"):
+            mx = stats[rule]["mixed"]
+            km = [n for n in ns if f"{lam}_{n}" in mx]
+            ax_vals = [mx[f"{lam}_{n}"]["woa_long"] for n in km]
+            bx.errorbar(km, ax_vals, yerr=[mx[f"{lam}_{n}"]["woa_long_se"] for n in km],
+                        fmt="o-", color=colors[rule], lw=2, ms=5, capsize=3, label=labels[rule])
+        km = [n for n in ns if f"{lam}_{n}" in rational]
+        bx.plot(km, [rational[f"{lam}_{n}"] for n in km], "--", color=INK, lw=1,
+                label="rational weight")
+        ax.set_title(f"λ = {lam}", fontsize=10, color=INK)
+        for a in (ax, bx):
+            a.set_xscale("log")
+            a.set_xticks(ns, [str(v) for v in ns])
+            a.minorticks_off()
+            _style(a)
+        bx.set_xlabel("cases studied (both / the long twin)", fontsize=8, color=INK)
+    axes[0, 0].set_ylabel("equal pairs: WOA on own final", fontsize=8, color=INK)
+    axes[1, 0].set_ylabel("mixed pairs: WOA of the\nlong-trained twin", fontsize=8, color=INK)
+    axes[0, -1].legend(fontsize=7, frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5))
+    axes[1, -1].legend(fontsize=7, frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5))
+    fig.suptitle("Entrenchment under three team rules (0 = kept own opening; 8 pairs per point)",
+                 fontsize=10, color=INK)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)

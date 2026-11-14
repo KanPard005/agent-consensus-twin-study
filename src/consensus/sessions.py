@@ -87,6 +87,15 @@ prediction and the true y are revealed to both of you.
 The team's prediction is the average of your two final estimates, and the team is scored by its \
 squared error."""
 
+# Each twin scored on its own final ("individual"): nothing rewards leaving the combining to a
+# team average, so keeping one's own estimate measures conviction, not delegation.
+RULE_INDIVIDUAL = """\
+- when you are ready, submit_prediction records your own final estimate of y (once per query). \
+It waits until your partner has also submitted its final; then both finals and the true y are \
+revealed to both of you.
+You are scored by the squared error of your own final estimate, and your partner by the squared \
+error of its own."""
+
 TOOL_DOCS = {
     "get_training_data": "Get the next n labelled training cases (n from 1 to 25).",
     "regress": (
@@ -141,8 +150,10 @@ class ConsensusAPI:
         study_all: bool = False,
         team_rule: str = "consensus",
     ) -> None:
-        if team_rule not in ("consensus", "average"):
-            raise ValueError(f"team_rule must be 'consensus' or 'average', got {team_rule!r}")
+        if team_rule not in ("consensus", "average", "individual"):
+            raise ValueError(
+                f"team_rule must be 'consensus', 'average' or 'individual', got {team_rule!r}"
+            )
         self.team_rule = team_rule
         self.cond = threading.Condition()
         # Training budget per twin (an int for both, or {"A": n_A, "B": n_B}); with `study_all`
@@ -236,7 +247,7 @@ class ConsensusAPI:
                     self.opening[k][q],
                     self.opening[self.other(k)][q],
                     (self.attempts[k][q][-1] if self.attempts[k][q] else float("nan"))
-                    if self.team_rule == "average" else self.agreed[q],
+                    if self.team_rule != "consensus" else self.agreed[q],
                 )
                 for k in "AB"
             },
@@ -400,7 +411,7 @@ class ConsensusAPI:
             q, o = self.q[k], self.other(k)
             if np.isnan(self.opening[k][q]):
                 return "Error: submit your opening first."
-            if self.team_rule == "average" and self.attempts[k][q]:
+            if self.team_rule != "consensus" and self.attempts[k][q]:
                 return "Error: you already submitted your final for this query."
             self.attempts[k][q].append(float(y))
             a = len(self.attempts[k][q])  # attempt number
@@ -421,6 +432,14 @@ class ConsensusAPI:
                     if q == self.T - 1
                     else " Call next_query for the next case."
                 )
+                if self.team_rule == "individual":
+                    pf = self.attempts[o][q][0] if self.attempts[o][q] else float("nan")
+                    return (
+                        f"Both finals are in: yours {float(y):.3f}, your partner's {pf:.3f}. The "
+                        f"true y was {self.y[q]:.3f}; your squared error "
+                        f"{(float(y) - self.y[q]) ** 2:.3f}, your partner's "
+                        f"{(pf - self.y[q]) ** 2:.3f}." + tail
+                    )
                 if self.team_rule == "average":
                     pf = self.attempts[o][q][0] if self.attempts[o][q] else float("nan")
                     return (
@@ -447,7 +466,7 @@ class ConsensusAPI:
         """Called (under the lock) when both twins have made attempt a, or the partner is gone."""
         sub = {k: self.attempts[k][q][a - 1] if len(self.attempts[k][q]) >= a else None
                for k in "AB"}
-        if self.team_rule == "average":  # each twin's own final; the team averages them
+        if self.team_rule != "consensus":  # each twin's own final; "team" = their average
             vals = [v for v in sub.values() if v is not None]
             self.agreed[q], self.resolved[q] = float(np.mean(vals)), True
         elif sub["A"] is None or sub["B"] is None:  # the partner is gone: accept the submission
@@ -540,7 +559,8 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         parts.append(PARTNER_INFO_LINE)
     if structure_hint:
         parts.append(STRUCTURE_HINT)
-    rule = (RULE_AVERAGE if api.team_rule == "average" else RULE_CONSENSUS).format(
+    rule = {"average": RULE_AVERAGE, "individual": RULE_INDIVIDUAL,
+            "consensus": RULE_CONSENSUS}[api.team_rule].format(
         tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}"
     )
     return START_QUERIES.format(

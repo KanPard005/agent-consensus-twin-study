@@ -63,7 +63,13 @@ def accuracy(pairs: dict) -> dict:
     R = np.array([(s["opening"]["A"], s["opening"]["B"], s["team"], s["y"])
                   for p in pairs.values() for s in p["recs"] if np.isfinite(s["team"])])
     coef = np.linalg.lstsq(R[:, :2], R[:, 3], rcond=None)[0]
-    return dict(mse_team=float(np.mean((R[:, 2] - R[:, 3]) ** 2)),
+    # Each twin's own final (what the twins are scored on under team_rule "individual").
+    own = [(own_final(s, k) - s["y"]) ** 2 for p in pairs.values() for s in p["recs"]
+           for k in "AB" if np.isfinite(own_final(s, k))]
+    opening = [(s["opening"][k] - s["y"]) ** 2 for p in pairs.values() for s in p["recs"]
+               for k in "AB" if np.isfinite(s["opening"][k])]
+    return dict(mse_own_final=float(np.mean(own)), mse_own_opening=float(np.mean(opening)),
+                mse_team=float(np.mean((R[:, 2] - R[:, 3]) ** 2)),
                 mse_average=float(np.mean((R[:, :2].mean(1) - R[:, 3]) ** 2)),
                 mse_fitted=float(np.mean((R[:, :2] @ coef - R[:, 3]) ** 2)))
 
@@ -82,6 +88,8 @@ def main(argv: list[str] | None = None) -> Path:
     p.add_argument("--ns", nargs="+", type=int, default=[25, 100, 400, 1600])
     p.add_argument("--short", type=int, default=25)
     p.add_argument("--prefix", default="llm_haiku_sessions_avg")
+    p.add_argument("--out", default="avg_sessions", help="output folder under results/")
+    p.add_argument("--title", default="Averaging rule: each twin submits its own final after talking")
     args = p.parse_args(argv)
     ea.PREFIX = args.prefix
     cons = sorted((ROOT / "results" / "entrench_sessions").glob("20*/stats.json"))
@@ -118,13 +126,14 @@ def main(argv: list[str] | None = None) -> Path:
 
     lines = ["Equal pairs (both studied n): each twin's WOA on its own final.", "",
              "| λ | n | pairs | WOA (± s.e.) | finals left at the opening | WOA by queries 1–10 / "
-             "11–20 / 21–30 | MSE team / average of openings / fitted |",
-             "|" + "---|" * 7]
+             "11–20 / 21–30 | MSE own final / own opening | MSE team / average of openings / fitted |",
+             "|" + "---|" * 8]
     for k, s in out["equal"].items():
         lam, n = k.split("_")
         lines.append(
             f"| {lam} | {n} | {s['n_pairs']} | {s['woa']:.2f} ± {s['woa_se']:.2f} "
             f"| {s['unchanged']:.0%} | {' / '.join(f'{v:.2f}' for v in s['woa_by_window'])} "
+            f"| {s['mse_own_final']:.2f} / {s['mse_own_opening']:.2f} "
             f"| {s['mse_team']:.2f} / {s['mse_average']:.2f} / {s['mse_fitted']:.2f} |")
     lines += ["", "Paired change in the equal pairs' WOA from n = 25 to n = 1600 (same pair index):",
               ""]
@@ -151,12 +160,12 @@ def main(argv: list[str] | None = None) -> Path:
             f"| {s['woa_long_consensus']:.2f} "
             f"| {s['mse_team']:.2f} / {s['mse_average']:.2f} / {s['mse_fitted']:.2f} |")
     lines.append(f"\ntotal cost ${out['cost']:.2f}")
-    run_out = make_run_dir(str(ROOT / "results"), "avg_sessions")
+    run_out = make_run_dir(str(ROOT / "results"), args.out)
     (run_out / "stats.json").write_text(json.dumps(out, indent=2))
     table = "\n".join(lines)
     (run_out / "table.md").write_text(table + "\n")
     if out["equal"]:
-        plot_avg_sessions(out, args.lambdas, args.ns, run_out / "avg_sessions.png")
+        plot_avg_sessions(out, args.lambdas, args.ns, run_out / f"{args.out}.png", args.title)
     print(table)
     print(f"saved to {run_out}")
     return run_out

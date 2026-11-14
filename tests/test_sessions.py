@@ -170,3 +170,28 @@ def test_average_team_rule():
     [th.join(timeout=20) for th in ths]
     assert api.resolved.all() and np.allclose(api.agreed, 2.25)
     assert recs[0]["woa"] == {"A": 0.25, "B": 0.0}
+
+
+def test_individual_scoring_rule():
+    api = make_api(T=2, team_rule="individual")
+    intro = intro_text(api, "A", False, True)
+    assert "squared error of your own final" in intro and "average" not in intro
+    out = {}
+
+    def twin(k):
+        while not api.get_training_data(k, 25).startswith("You have used"):
+            pass
+        api.start_queries(k, intro)
+        while "run is over" not in api.next_query(k):
+            q = api.q[k]
+            api.submit_opening(k, 1.0 if k == "A" else 3.0)
+            out.setdefault(k, []).append(api.submit_prediction(k, 2.0))
+            if q == api.T - 1:
+                break
+        api.finish(k)
+
+    ths = [threading.Thread(target=twin, args=(k,)) for k in "AB"]
+    [th.start() for th in ths]
+    [th.join(timeout=20) for th in ths]
+    assert api.resolved.all() and "your squared error" in out["A"][0]
+    assert api.record(0)["woa"] == {"A": 0.5, "B": 0.5}
