@@ -217,9 +217,15 @@ partner_opening (your and your partner's openings, over past queries), and new_m
 your features, own_opening, partner_opening, arithmetic expressions of these, or other names \
 whose values you give;
 - communicate any information to your partner, such as your features or your predictions;
-- make use of your partner's features in any way you want.
+- make use of your partner's features in any way you want{models_line}.
 
 You can make at most {cap} tool calls per query. Call next_query to begin."""
+
+# `prompt_style: clear_models` (LogBook 2026-11-14): the clear prompt plus one freedom, stated
+# outright: a new model can be built on any features the twin sees, its partner's included.
+MODELS_LINE_CLEAR = """;
+- build a new model using any features you see, including the features your partner sends you \
+(as columns whose values you give), if you want to"""
 
 TOOL_DOCS_CLEAR = {
     "get_training_data": "Get the next n labelled cases (n from 1 to 25).",
@@ -818,7 +824,8 @@ class ConsensusAPI:
 
 def _tool_docs(prompt_style: str) -> dict[str, str]:
     """Tool descriptions; the clear prompt style drops the words "training phase"."""
-    return {**TOOL_DOCS, **TOOL_DOCS_CLEAR} if prompt_style == "clear" else TOOL_DOCS
+    return ({**TOOL_DOCS, **TOOL_DOCS_CLEAR} if prompt_style in ("clear", "clear_models")
+            else TOOL_DOCS)
 
 
 def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False,
@@ -932,14 +939,15 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
                prompt_style: str = "standard") -> str:
     """The start_queries result for twin k (`{n_train}` is filled in at the call)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
-    if prompt_style == "clear":
+    if prompt_style in ("clear", "clear_models"):
         rule = {"average": RULE_AVERAGE, "individual": RULE_INDIVIDUAL,
                 "consensus": RULE_CONSENSUS}[api.team_rule].format(
             tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}")
         return START_QUERIES_CLEAR.format(
             opening=OPENING_CLEAR.format(n_train="{n_train}", other=api.other(k)),
             partner_par=PARTNER_CLEAR.format(own=", ".join(labels), other_feats=", ".join(other)),
-            T=api.T, rule_par=rule, cap=api.cap)
+            T=api.T, rule_par=rule, cap=api.cap,
+            models_line=MODELS_LINE_CLEAR if prompt_style == "clear_models" else "")
     shared = [lab for lab in labels if lab in other]
     fmt = dict(own=", ".join(labels), other=", ".join(other))
     parts = [
@@ -1016,7 +1024,7 @@ class TwinSession:
         if api.no_training:
             self.system = SYSTEM_UNTRAINED.format(
                 name=name, d=len(labels), names=", ".join(labels), intro=self.intro)
-        if prompt_style == "clear":
+        if prompt_style in ("clear", "clear_models"):
             if api.no_training or api.elicit or not (model_tools and api.models_in_training):
                 raise ValueError("prompt_style 'clear' needs training cases, model_tools and "
                                  "models_in_training")

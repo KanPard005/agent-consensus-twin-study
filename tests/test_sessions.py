@@ -273,3 +273,17 @@ def test_clear_prompt_style():
         assert s in intro
     # The standard style is unchanged.
     assert "The training phase is over" in intro_text(api, "A", False, True, True, True)
+
+
+def test_clear_models_prompt_style():
+    """`clear_models` adds only the line about building models on any features."""
+    from consensus.sessions import TwinSession
+
+    api = make_api(budget=50, team_rule="individual", models_in_training=True)
+    kw = dict(structure_hint=False, partner_info=True, same_y=True, model_tools=True)
+    a = TwinSession("A", api, prompt_style="clear", **kw)
+    b = TwinSession("A", api, prompt_style="clear_models", **kw)
+    assert a.system == b.system
+    extra = b.intro.replace(a.intro.split("You can make at most")[0], "")
+    assert "build a new model using any features you see" in b.intro
+    assert "build a new model" not in a.intro and extra
