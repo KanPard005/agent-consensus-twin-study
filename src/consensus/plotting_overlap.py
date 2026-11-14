@@ -174,3 +174,54 @@ def plot_entrench_sessions(out: dict, lambdas: list[str], path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_entrench_panels(out: dict, lambdas: list[str], ns: list[int], path: Path) -> None:
+    """Entrenchment with live-session twins, one column per lambda.
+
+    Top row: the long-trained twin's weight of advice in mixed pairs (partner studied 25) against
+    how many cases it studied, mean with per-pair dots; the rational partner weight (dashed) and
+    the even split (dotted) for reference. Below the rational line = conceding less than the
+    openings' accuracy justifies. Bottom row: MSE of the agreed prediction against simply
+    averaging the two openings and the least-squares combination of the openings."""
+    fig, axes = plt.subplots(2, len(lambdas), figsize=(3.0 * len(lambdas), 6.0), sharex=True,
+                             sharey="row")
+    for j, lam in enumerate(lambdas):
+        ks = [f"{lam}_{n}" for n in ns if f"{lam}_{n}" in out["mixed"]]
+        n = np.array([int(k.split("_")[1]) for k in ks])
+        cells = [out["mixed"][k] for k in ks]
+        ax = axes[0, j]
+        for x, c in zip(n, cells):
+            pts = [p["woa_long"] for p in c["pairs"]]
+            jitter = x * np.exp(np.linspace(-0.08, 0.08, len(pts)))
+            ax.scatter(jitter, pts, s=12, color=CAT[0], alpha=0.35, lw=0, zorder=2)
+        ax.errorbar(n, [c["woa_long"] for c in cells], yerr=[c["woa_long_se"] for c in cells],
+                     fmt="o-", color=CAT[0], lw=2, ms=6, capsize=3, zorder=3,
+                     label="long-trained twin")
+        ax.plot(n, [c["rational_partner_weight"] for c in cells], "--", color=INK, lw=1,
+                label="rational weight")
+        ax.axhline(0.5, color=MUTED, lw=1, ls=":", label="even split")
+        ax.set_title(f"λ = {lam}", fontsize=10, color=INK)
+        _style(ax)
+        bx = axes[1, j]
+        for key, lab, col, ls in (("mse_agreed", "agreed prediction", CAT[1], "-"),
+                                  ("mse_average", "average of openings", MUTED, "--"),
+                                  ("mse_fitted", "best combination", INK, ":")):
+            bx.plot(n, [c[key] for c in cells], "o" + ls if ls != ":" else "o:", color=col,
+                    lw=2 if key == "mse_agreed" else 1, ms=5, label=lab)
+        _style(bx)
+        bx.set_xscale("log")
+        bx.set_xticks(ns, [str(v) for v in ns])
+        bx.minorticks_off()
+        bx.set_xlabel("cases the long twin studied", fontsize=8, color=INK)
+    axes[0, 0].set_ylabel("weight of advice of the long-trained twin\n(0 = agreement on its opening)",
+                          fontsize=8, color=INK)
+    axes[1, 0].set_ylabel("mean squared error", fontsize=8, color=INK)
+    axes[0, 0].set_ylim(-0.05, 0.8)
+    axes[0, -1].legend(fontsize=7, frameon=False, loc="upper right")
+    axes[1, -1].legend(fontsize=7, frameon=False, loc="upper right")
+    fig.suptitle("Studying alone for longer: the long-trained twin concedes less than its accuracy "
+                 "justifies (partner studied 25 cases; 8 pairs per point)", fontsize=10, color=INK)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
