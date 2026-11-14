@@ -1,0 +1,57 @@
+# T = 100 (LogBook 2026-11-14): clear_history with 100 joint queries, to see whether a joint model
+# built from past queries gets used once it has enough rows.
+# clear_history (LogBook 2026-11-14): clear_models plus past queries as data: add_case with a past
+# query number, add_row with values and y given, and a log (write_log / read_log), all stated in the
+# prompts.
+# clear_models (LogBook 2026-11-14): the clear prompt plus 'build a new model using any features
+# you see, including the features your partner sends you ..., if you want to'.
+# Clearer prompts (LogBook 2026-11-14, Kanad's spec): same twins and data as
+# configs/llm_haiku_sessions_asym_own.yaml, with agent.prompt_style: clear (no "training phase";
+# the data and regression APIs listed; at start_queries the twins are told they can train new
+# models, communicate any information, features or predictions, and use the partner's features in
+# any way they want). See SYSTEM_CLEAR / START_QUERIES_CLEAR in consensus.sessions.
+# Launch: launch_grid.py --config <this> --prefix llm_haiku_sessions_clearhist100_own --no-mixed --ns 400
+#         --lambdas 0.0 0.5 --alphas 1.0
+experiment: llm_haiku_sessions_clearhist100_own
+seed: 0
+n_runs: 1
+T: 100
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  alpha: 1.0
+  weak: B
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 25
+  study_all: true
+  team_rule: individual     # each twin scored on its own final (no team average)
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40                   # tool calls per query (the model tools need more)
+  structure_hint: false
+  partner_info: true
+  same_y: true
+  model_tools: true
+  models_in_training: true  # instances from the training phase on, with expression columns
+  prompt_style: clear_history
+  history_tools: true
+  max_budget_usd: 3.0
+  max_continues: 10
