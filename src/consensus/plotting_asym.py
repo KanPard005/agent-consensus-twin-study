@@ -105,3 +105,44 @@ def plot_untrained_curves(cells: dict, lambdas: list[str], alphas: list[str], wi
     fig.tight_layout(rect=(0, 0.1, 1, 1))
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def plot_confidence(cells: dict, lambdas, alphas, path: Path) -> None:
+    """Stated vs realised error over time, one panel per (arm, lambda, alpha).
+
+    Lines are stated / realised mean absolute error (1 = calibrated, below 1 = overconfident):
+    solid for the twin's own opening, dashed for its partner's, colored by role. A widening gap
+    with solid above dashed means the twin rates its partner relatively worse over time (the
+    self-favouring bias grows)."""
+    arms = [a for a in ("untrained", "trained") if any(k.startswith(a + "_") for k in cells)]
+    combos = [(lam, al) for lam in lambdas for al in alphas]
+    fig, axes = plt.subplots(len(arms), len(combos), figsize=(2.6 * len(combos), 2.7 * len(arms)),
+                             squeeze=False, sharey=True)
+    titles = {"untrained": "no training", "trained": "400 training cases"}
+    for i, arm in enumerate(arms):
+        for j, (lam, al) in enumerate(combos):
+            ax = axes[i, j]
+            _style(ax)
+            c = cells.get(f"{arm}_{lam}_{al}")
+            if c is None:
+                ax.set_visible(False)
+                continue
+            x = np.array([(a + b) / 2 + 0.5 for a, b in c["windows"]])
+            for ci, (role, label) in enumerate(ROLES):
+                R = c[role[0].upper()]
+                ax.plot(x, [w["calib_own"] for w in R], color=CAT[ci], lw=2, marker="o", ms=5,
+                        label=f"own error, {label}")
+                ax.plot(x, [w["calib_partner"] for w in R], color=CAT[ci], lw=1.5, ls="--",
+                        marker="s", ms=4, label=f"partner's error, {label}")
+            ax.axhline(1.0, color=MUTED, lw=1, ls=":")
+            ax.set_title(f"{titles[arm]}\nλ = {lam}, α = {al}", fontsize=8, color=INK)
+            if i == len(arms) - 1:
+                ax.set_xlabel("query", fontsize=8, color=INK)
+            if j == 0:
+                ax.set_ylabel("stated / realised error", fontsize=8, color=INK)
+            ax.tick_params(labelsize=7, colors=MUTED)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=7, frameon=False)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.savefig(path, dpi=160)
+    plt.close(fig)

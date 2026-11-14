@@ -69,7 +69,7 @@ read_messages shows your partner's opening and new messages (it waits until your
 something new, submits a prediction, or is also waiting);
 {rule_par} regress can now also use \
 own_opening and partner_opening (your and your partner's openings, over past queries). You can \
-make at most {cap} tool calls per query.{model_par} Call next_query to begin."""
+make at most {cap} tool calls per query.{model_par}{elicit_par} Call next_query to begin."""
 
 OPENING_TRAINED = """\
 The training phase is over ({n_train} training cases studied). From now on you have a partner, \
@@ -92,6 +92,13 @@ predictors you choose by least squares over every case whose y you know.
 
 Keep working with the tools until a tool result says that the run is over; do not stop before \
 that."""
+
+# `elicit` (LogBook 2026-11-14): stated confidence. With each opening an 80% interval for y; with
+# each final, the typical error the twin expects of its own opening and of its partner's. Only
+# asked for, never scored; nothing says how to use them.
+ELICIT_PAR = """ With each opening, also give your 80% interval for y (low, high). With each \
+final, also say how far you expect your opening and your partner's opening to be from the true y \
+(own_error and partner_error, as typical absolute errors)."""
 
 # The team rule, in the start_queries text: the twins must agree ("consensus"), or each submits
 # its own final and the team's prediction is their average ("average").
@@ -248,7 +255,10 @@ class ConsensusAPI:
         team_rule: str = "consensus",
         models_in_training: bool = False,
         no_training: bool = False,
+        elicit: bool = False,
     ) -> None:
+        # Stated confidence (see ELICIT_PAR): interval with the opening, errors with the final.
+        self.elicit = elicit
         # No training phase: both twins start in the query phase with no labelled cases.
         self.no_training = no_training
         if no_training:
@@ -278,6 +288,8 @@ class ConsensusAPI:
         self.opening = {k: np.full(self.T, np.nan) for k in "AB"}
         self.attempts = {k: [[] for _ in range(self.T)] for k in "AB"}  # submissions per query
         self.agreed = np.full(self.T, np.nan)  # the accepted prediction
+        self.interval = {k: np.full((self.T, 2), np.nan) for k in "AB"}  # 80% (low, high)
+        self.stated = {k: np.full((self.T, 2), np.nan) for k in "AB"}  # (own_error, partner_error)
         self.failed = np.zeros(self.T, bool)
         self.resolved = np.zeros(self.T, bool)
         self.inbox = {k: [] for k in "AB"}  # (q, text) received
@@ -345,6 +357,8 @@ class ConsensusAPI:
             "final": {k: float(self.attempts[k][q][-1]) if self.attempts[k][q] else float("nan")
                       for k in "AB"},
             "agreed": float(self.agreed[q]),
+            "interval": {k: [float(v) for v in self.interval[k][q]] for k in "AB"},
+            "stated_error": {k: [float(v) for v in self.stated[k][q]] for k in "AB"},
             "failed": bool(self.failed[q]),
             "team": float(self.agreed[q]),
             "messages": [m for m in self.messages if m["q"] == q],
@@ -455,13 +469,18 @@ class ConsensusAPI:
             return "Error: this query is resolved; call next_query."
         return None
 
-    def submit_opening(self, k: str, y: float) -> str:
+    def submit_opening(self, k: str, y: float, low: float | None = None,
+                       high: float | None = None) -> str:
         with self.cond:
             if err := self._in_query(k):
                 return err
             q = self.q[k]
             if not np.isnan(self.opening[k][q]):
                 return "Error: you already submitted your opening for this query."
+            if self.elicit:
+                if low is None or high is None or not low <= high:
+                    return "Error: give your 80% interval for y as low <= high with the opening."
+                self.interval[k][q] = (float(low), float(high))
             self.opening[k][q] = float(y)
             self.cond.notify_all()
             return f"Opening {float(y):.3f} recorded for query {q + 1}."
@@ -518,7 +537,8 @@ class ConsensusAPI:
                 lines.append("Your partner is also waiting for a message.")
             return "\n".join(lines)
 
-    def submit_prediction(self, k: str, y: float) -> str:
+    def submit_prediction(self, k: str, y: float, own_error: float | None = None,
+                          partner_error: float | None = None) -> str:
         with self.cond:
             if err := self._in_query(k):
                 return err
@@ -527,6 +547,12 @@ class ConsensusAPI:
                 return "Error: submit your opening first."
             if self.team_rule != "consensus" and self.attempts[k][q]:
                 return "Error: you already submitted your final for this query."
+            if self.elicit:
+                if own_error is None or partner_error is None or min(own_error, partner_error) < 0:
+                    return ("Error: with the final, give own_error and partner_error (typical "
+                            "absolute errors you expect of your opening and your partner's, >= 0).")
+                if np.isnan(self.stated[k][q][0]):  # the first statement for this query
+                    self.stated[k][q] = (float(own_error), float(partner_error))
             self.attempts[k][q].append(float(y))
             a = len(self.attempts[k][q])  # attempt number
             self.waiting[k] = "submit"
@@ -744,10 +770,20 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
     async def next_query(args):
         return await run("next_query", args, lambda: api.next_query(k))
 
+    def num(args: dict, key: str) -> float | None:
+        v = args.get(key)
+        return None if v is None else float(v)
+
+    el = api.elicit
+    open_props = {"y": {"type": "number"}}
+    if el:
+        open_props |= {"low": {"type": "number"}, "high": {"type": "number"}}
+
     @tool("submit_opening", TOOL_DOCS["submit_opening"],
-          {**obj, "properties": {"y": {"type": "number"}}, "required": ["y"]})
+          {**obj, "properties": open_props, "required": ["y", "low", "high"] if el else ["y"]})
     async def submit_opening(args):
-        return await run("submit_opening", args, lambda: api.submit_opening(k, float(args["y"])))
+        return await run("submit_opening", args, lambda: api.submit_opening(
+            k, float(args["y"]), num(args, "low"), num(args, "high")))
 
     @tool("send_message", TOOL_DOCS["send_message"],
           {**obj, "properties": {"text": {"type": "string"}}, "required": ["text"]})
@@ -758,11 +794,16 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
     async def read_messages(args):
         return await run("read_messages", args, lambda: api.read_messages(k))
 
+    pred_props = {"y": {"type": "number"}}
+    if el:
+        pred_props |= {"own_error": {"type": "number"}, "partner_error": {"type": "number"}}
+
     @tool("submit_prediction", TOOL_DOCS["submit_prediction"],
-          {**obj, "properties": {"y": {"type": "number"}}, "required": ["y"]})
+          {**obj, "properties": pred_props,
+           "required": ["y", "own_error", "partner_error"] if el else ["y"]})
     async def submit_prediction(args):
-        return await run("submit_prediction", args,
-                         lambda: api.submit_prediction(k, float(args["y"])))
+        return await run("submit_prediction", args, lambda: api.submit_prediction(
+            k, float(args["y"]), num(args, "own_error"), num(args, "partner_error")))
 
     tools = [get_training_data, regress_tool, start_queries, next_query, submit_opening,
              send_message, read_messages, submit_prediction]
@@ -835,6 +876,7 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         cap=api.cap,
         model_par=(MODEL_PAR_TRAINED if api.models_in_training else MODEL_PAR)
         if model_tools else "",
+        elicit_par=ELICIT_PAR if api.elicit else "",
     )
 
 
