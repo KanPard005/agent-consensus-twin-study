@@ -287,3 +287,59 @@ def test_clear_models_prompt_style():
     extra = b.intro.replace(a.intro.split("You can make at most")[0], "")
     assert "build a new model using any features you see" in b.intro
     assert "build a new model" not in a.intro and extra
+
+
+def test_history_tools_past_queries_rows_and_log():
+    """`history_tools` (LogBook 2026-11-14): add_case with a past query number (own features and
+    openings filled in, partner columns given, y at once, re-adding replaces), add_row with
+    values and y given, and the per-twin log."""
+    api = make_api(T=5, budget=50, team_rule="individual", models_in_training=True,
+                   history_tools=True)
+    api.phase["A"], api.q["A"] = "query", 3
+    api.resolved[:3] = True
+    api.opening["A"][:4] = [0.1, 0.2, 0.3, 0.4]
+    api.opening["B"][:4] = [1.0, 2.0, 3.0, 4.0]
+    assert "created" in api.new_model("A", "joint", ["x1", "x4", "partner_opening"], False)
+    assert "Error" in api.add_case("A", "joint", {}, query=2)  # x4 not given
+    assert "Error" in api.add_case("A", "joint", {"x4": 1.0}, query=4)  # not resolved yet
+    assert "with its y" in api.add_case("A", "joint", {"x4": 0.5}, query=2)
+    assert "with its y" in api.add_case("A", "joint", {"x4": 0.7}, query=2)  # replaces
+    rows = api.models["A"]["joint"]["rows"]
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["x4"] == 0.7 and r["partner_opening"] == 2.0
+    assert r["x1"] == float(api.qx["A"][1][0]) and r["y"] == float(api.y[1])
+    # add_row: every column and y given by the twin; expressions computed from given values
+    api.new_model("A", "sq", ["x1", "x1^2"], False)
+    assert "Error" in api.add_row("A", "sq", {}, 1.0)
+    assert "Row added" in api.add_row("A", "sq", {"x1": 2.0}, 1.5)
+    assert api.models["A"]["sq"]["rows"][0] == {"x1": 2.0, "x1^2": 4.0, "y": 1.5}
+    # the log
+    assert "empty" in api.read_log("A")
+    api.write_log("A", "q2: b = (0.7, -1, 2), y = 1.3")
+    assert "q2: b = (0.7, -1, 2)" in api.read_log("A") and "empty" in api.read_log("B")
+    # without the flag a `query` argument is ignored (the standard current-case path)
+    api2 = make_api(T=5, budget=50, team_rule="individual", models_in_training=True)
+    api2.phase["A"], api2.q["A"] = "query", 3
+    api2.new_model("A", "m", ["x1"], False)
+    assert "will be added" in api2.add_case("A", "m", {}, query=2)
+
+
+def test_clear_history_prompt_style():
+    from consensus.sessions import TwinSession
+
+    kw = dict(structure_hint=False, partner_info=True, same_y=True, model_tools=True)
+    api = make_api(budget=50, team_rule="individual", models_in_training=True,
+                   history_tools=True)
+    t = TwinSession("A", api, prompt_style="clear_history", **kw)
+    assert "Log API:" in t.system and "add_row(name, values, y)" in t.system
+    for s in ("send the features and labels of past queries to any regression model",
+              "log the features (your own and your partner's)", "You can do this at any step",
+              "construct your own from past queries", "build a new model using any features"):
+        assert s in t.intro
+    try:
+        TwinSession("A", make_api(budget=50, team_rule="individual", models_in_training=True),
+                    prompt_style="clear_history", **kw)
+        raise AssertionError("needs history_tools")
+    except ValueError:
+        pass

@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> Path:
             models_in_training=ag.get("models_in_training", False),
             no_training=ag.get("no_training", False),
             elicit=ag.get("elicit", False),
+            history_tools=ag.get("history_tools", False),
             tol=ag["tol"],
             max_attempts=ag["max_attempts"],
             penalty=ag["penalty"],

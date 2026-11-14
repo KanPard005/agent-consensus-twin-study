@@ -182,12 +182,36 @@ your labelled cases (also the ones you get afterwards).
 - fit_model(name, values): fits one of your models on its cases (and, during the queries, \
 predicts the current case).
 - add_case(name, values): during the queries, adds the current case to one of your models (its y \
-is added once it is revealed).
-Your models stay available during the queries.
+is added once it is revealed).{history_api}
+Your models stay available during the queries.{log_api}
 
 Keep working with these tools and study the labelled cases. When you have finished studying, \
 call start_queries. Keep working with the tools until a tool result says that the run is over; \
 do not stop before that."""
+
+# `prompt_style: clear_history` (LogBook 2026-11-14, Kanad's spec): clear_models plus past queries
+# as data. Listed in the system prompt (extra API functions) and stated at start_queries.
+HISTORY_API = """
+- add_case(name, values, query): during the queries, can also add a past query to one of your \
+models, given its number: its y is added at once.
+- add_row(name, values, y): adds a labelled row to one of your models, with every column value and \
+the label y given by you."""
+
+LOG_API = """
+
+Log API:
+- write_log(text): saves a note to your log.
+- read_log(): shows every note in your log."""
+
+HISTORY_LINES = """;
+- send the features and labels of past queries to any regression model you train: add_case with \
+a query number adds a past query (your features and both openings are filled in, its y is added \
+at once, and you give the other columns, such as the features your partner sent for that query), \
+and add_row adds a row whose values and y you give;
+- log the features (your own and your partner's) and the labels of past queries with write_log, \
+and use them later with read_log.
+You can do this at any step. You do not need ready-made labelled cases with the features you want: \
+you can construct your own from past queries"""
 
 OPENING_CLEAR = """\
 You have finished studying ({n_train} labelled cases). From now on you have a partner, agent \
@@ -226,6 +250,18 @@ You can make at most {cap} tool calls per query. Call next_query to begin."""
 MODELS_LINE_CLEAR = """;
 - build a new model using any features you see, including the features your partner sends you \
 (as columns whose values you give), if you want to"""
+
+TOOL_DOCS_HISTORY = {
+    "add_case": (
+        "Query phase: add a case to one of your model instances: the current case (its y is "
+        "added once revealed), or a past query given by its number in `query` (its y is added "
+        "at once). Give the values of columns that are not filled in automatically in `values`."
+    ),
+    "add_row": ("Add a labelled row to one of your model instances: you give the value of every "
+                "column in `values` and the label `y`."),
+    "write_log": "Save a note to your log (anything: features, labels, predictions, ideas).",
+    "read_log": "Show every note in your log.",
+}
 
 TOOL_DOCS_CLEAR = {
     "get_training_data": "Get the next n labelled cases (n from 1 to 25).",
@@ -340,7 +376,12 @@ class ConsensusAPI:
         models_in_training: bool = False,
         no_training: bool = False,
         elicit: bool = False,
+        history_tools: bool = False,
     ) -> None:
+        # Past queries as data (LogBook 2026-11-14): add_case with a past query number, add_row
+        # with values and y the twin gives itself, and a per-twin log (write_log / read_log).
+        self.history_tools = history_tools
+        self.log_notes = {"A": [], "B": []}
         # Stated confidence (see ELICIT_PAR): interval with the opening, errors with the final.
         self.elicit = elicit
         # No training phase: both twins start in the query phase with no labelled cases.
@@ -764,8 +805,9 @@ class ConsensusAPI:
             return (f"Model '{name}' created{replaced} with columns {', '.join(cols)}; it has "
                     f"{data}. Filled in automatically: {', '.join(auto) or 'none'}.")
 
-    def _row(self, k: str, name: str, values: dict) -> tuple[dict | None, str]:
-        q = self.q[k]
+    def _row(self, k: str, name: str, values: dict,
+             q: int | None = None) -> tuple[dict | None, str]:
+        q = self.q[k] if q is None else q
         m = self.models[k].get(name)
         if m is None:
             return None, f"Error: no model named '{name}' (create it with new_model)."
@@ -788,7 +830,9 @@ class ConsensusAPI:
             return None, f"Error: give values for {', '.join(missing)}."
         return row, ""
 
-    def add_case(self, k: str, name: str, values: dict) -> str:
+    def add_case(self, k: str, name: str, values: dict, query: int | None = None) -> str:
+        if query is not None and self.history_tools:
+            return self._add_past_case(k, name, values, int(query))
         with self.cond:
             if err := self._in_query(k):
                 return err
@@ -799,6 +843,67 @@ class ConsensusAPI:
             m["pending"][self.q[k]] = row
             return (f"Case {self.q[k] + 1} added to '{name}' ({len(m['rows'])} cases with y so "
                     "far); its y will be added when it is revealed.")
+
+    def _add_past_case(self, k: str, name: str, values: dict, query: int) -> str:
+        """Add past query `query` (1-based, resolved) to a model, with its y at once. Own
+        features and both openings of that query are filled in; other columns from `values`.
+        Adding the same query again replaces its row."""
+        with self.cond:
+            if self.phase[k] != "query":
+                return "Error: past queries can be added during the queries."
+            q = query - 1
+            if not 0 <= q < self.T or not self.resolved[q] or q > self.q[k]:
+                return f"Error: query {query} is not a past query whose y is revealed."
+            row, err = self._row(k, name, values or {}, q=q)
+            if row is None:
+                return err
+            m = self.models[k][name]
+            m["pending"].pop(q, None)
+            m["rows"] = [r for r in m["rows"] if r.get("_q") != q]
+            m["rows"].append({**row, "y": float(self.y[q]), "_q": q})
+            return (f"Query {query} added to '{name}' with its y ({len(m['rows'])} cases with y "
+                    "so far).")
+
+    def add_row(self, k: str, name: str, values: dict, y: float) -> str:
+        """Add a labelled row whose column values and y the twin gives itself."""
+        with self.cond:
+            m = self.models[k].get(name)
+            if m is None:
+                return f"Error: no model named '{name}' (create it with new_model)."
+            values = values or {}
+            row, missing = {}, []
+            given = {}
+            for c, v in values.items():
+                try:
+                    given[str(c)] = float(v)
+                except (TypeError, ValueError):
+                    return f"Error: the value of {c} must be a number."
+            for c in m["columns"]:
+                v = given.get(c, eval_expr(c, given))
+                if v is None:
+                    missing.append(c)
+                else:
+                    row[c] = float(v)
+            if missing:
+                return f"Error: give values for {', '.join(missing)}."
+            try:
+                yv = float(y)
+            except (TypeError, ValueError):
+                return "Error: y must be a number."
+            m["rows"].append({**row, "y": yv})
+            return f"Row added to '{name}' ({len(m['rows'])} cases with y so far)."
+
+    def write_log(self, k: str, text: str) -> str:
+        with self.cond:
+            self.log_notes[k].append({"q": self.q[k], "text": str(text)[: self.max_chars]})
+            return f"Saved (entry {len(self.log_notes[k])} of your log)."
+
+    def read_log(self, k: str) -> str:
+        with self.cond:
+            if not self.log_notes[k]:
+                return "Your log is empty."
+            return "\n".join(f"[{i + 1}, query {e['q'] + 1}] {e['text']}"
+                             for i, e in enumerate(self.log_notes[k]))
 
     def fit_model(self, k: str, name: str, values: dict) -> str:
         with self.cond:
@@ -819,11 +924,13 @@ class ConsensusAPI:
             for m in self.models[k].values():
                 row = m["pending"].pop(q, None)
                 if row is not None:
-                    m["rows"].append({**row, "y": float(self.y[q])})
+                    m["rows"].append({**row, "y": float(self.y[q]), "_q": q})
 
 
 def _tool_docs(prompt_style: str) -> dict[str, str]:
     """Tool descriptions; the clear prompt style drops the words "training phase"."""
+    if prompt_style == "clear_history":
+        return {**TOOL_DOCS, **TOOL_DOCS_CLEAR, **TOOL_DOCS_HISTORY}
     return ({**TOOL_DOCS, **TOOL_DOCS_CLEAR} if prompt_style in ("clear", "clear_models")
             else TOOL_DOCS)
 
@@ -913,12 +1020,17 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
                 k, str(args.get("name", "")), list(args.get("columns", [])),
                 args.get("include_training")))
 
+        case_props = {"name": {"type": "string"}, "values": val_schema}
+        if api.history_tools:
+            case_props["query"] = {"type": "integer"}
+
         @tool("add_case", TOOL_DOCS["add_case"],
-              {**obj, "properties": {"name": {"type": "string"}, "values": val_schema},
-               "required": ["name"]})
+              {**obj, "properties": case_props, "required": ["name"]})
         async def add_case(args):
+            q = args.get("query")
             return await run("add_case", args, lambda: api.add_case(
-                k, str(args.get("name", "")), dict(args.get("values") or {})))
+                k, str(args.get("name", "")), dict(args.get("values") or {}),
+                None if q is None else int(q)))
 
         @tool("fit_model", TOOL_DOCS["fit_model"],
               {**obj, "properties": {"name": {"type": "string"}, "values": val_schema},
@@ -928,6 +1040,27 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
                 k, str(args.get("name", "")), dict(args.get("values") or {})))
 
         tools += [new_model, add_case, fit_model]
+        if api.history_tools:
+            @tool("add_row", TOOL_DOCS["add_row"],
+                  {**obj, "properties": {"name": {"type": "string"}, "values": val_schema,
+                                         "y": {"type": "number"}},
+                   "required": ["name", "values", "y"]})
+            async def add_row(args):
+                return await run("add_row", args, lambda: api.add_row(
+                    k, str(args.get("name", "")), dict(args.get("values") or {}),
+                    args.get("y")))
+
+            @tool("write_log", TOOL_DOCS["write_log"],
+                  {**obj, "properties": {"text": {"type": "string"}}, "required": ["text"]})
+            async def write_log(args):
+                return await run("write_log", args,
+                                 lambda: api.write_log(k, str(args.get("text", ""))))
+
+            @tool("read_log", TOOL_DOCS["read_log"], {**obj, "properties": {}})
+            async def read_log(args):
+                return await run("read_log", args, lambda: api.read_log(k))
+
+            tools += [add_row, write_log, read_log]
     if api.no_training:
         tools = [t_ for t_ in tools if t_.name not in ("get_training_data", "start_queries")]
     server = create_sdk_mcp_server("data", tools=tools)
@@ -939,7 +1072,7 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
                prompt_style: str = "standard") -> str:
     """The start_queries result for twin k (`{n_train}` is filled in at the call)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
-    if prompt_style in ("clear", "clear_models"):
+    if prompt_style in ("clear", "clear_models", "clear_history"):
         rule = {"average": RULE_AVERAGE, "individual": RULE_INDIVIDUAL,
                 "consensus": RULE_CONSENSUS}[api.team_rule].format(
             tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}")
@@ -947,7 +1080,9 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
             opening=OPENING_CLEAR.format(n_train="{n_train}", other=api.other(k)),
             partner_par=PARTNER_CLEAR.format(own=", ".join(labels), other_feats=", ".join(other)),
             T=api.T, rule_par=rule, cap=api.cap,
-            models_line=MODELS_LINE_CLEAR if prompt_style == "clear_models" else "")
+            models_line=(MODELS_LINE_CLEAR if prompt_style == "clear_models"
+                         else MODELS_LINE_CLEAR + HISTORY_LINES
+                         if prompt_style == "clear_history" else ""))
     shared = [lab for lab in labels if lab in other]
     fmt = dict(own=", ".join(labels), other=", ".join(other))
     parts = [
@@ -1024,7 +1159,9 @@ class TwinSession:
         if api.no_training:
             self.system = SYSTEM_UNTRAINED.format(
                 name=name, d=len(labels), names=", ".join(labels), intro=self.intro)
-        if prompt_style in ("clear", "clear_models"):
+        if prompt_style in ("clear", "clear_models", "clear_history"):
+            if prompt_style == "clear_history" and not api.history_tools:
+                raise ValueError("prompt_style 'clear_history' needs history_tools")
             if api.no_training or api.elicit or not (model_tools and api.models_in_training):
                 raise ValueError("prompt_style 'clear' needs training cases, model_tools and "
                                  "models_in_training")
@@ -1032,7 +1169,9 @@ class TwinSession:
                 name=name, d=len(labels), names=", ".join(labels), budget=api.budget[name],
                 study_rule=(f"You must study all {api.budget[name]} labelled cases before the "
                             "queries start." if api.study_all else ""),
-                ex1=labels[0], ex2=labels[1 % len(labels)], ex3=labels[-1])
+                ex1=labels[0], ex2=labels[1 % len(labels)], ex3=labels[-1],
+                history_api=HISTORY_API if prompt_style == "clear_history" else "",
+                log_api=LOG_API if prompt_style == "clear_history" else "")
         self.live = Path(live_dir) if live_dir is not None else None
         self.run_id = run
         self.cost_usd = 0.0

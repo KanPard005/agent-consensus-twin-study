@@ -36,8 +36,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from consensus.sessions import weight_of_advice  # noqa: E402
 from consensus.utils import make_run_dir  # noqa: E402
 
-TOOLS = ("regress", "new_model", "add_case", "fit_model")
-MODEL_TOOLS = ("new_model", "add_case", "fit_model")
+TOOLS = ("regress", "new_model", "add_case", "fit_model", "add_row", "write_log", "read_log")
+MODEL_TOOLS = ("new_model", "add_case", "fit_model", "add_row")
 NUM = r"-?\d+\.\d+"
 ADD = re.compile(r"\badd(itive|ing|ed)?\b|\bsum\b|\bsumm", re.I)
 
