@@ -311,3 +311,49 @@ def plot_rules_comparison(stats: dict, rational: dict, lambdas: list[str], ns: l
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_decisions(out: dict, path: Path) -> None:
+    """What twins do with their partner's information (`scripts/decision_analysis.py`).
+
+    Left: share of twin-queries with each behaviour, by team rule (grids entrench / avg / own).
+    Right: equal pairs, selected behaviours against cases studied (log scale)."""
+    cats = ["shares_features", "asks_features", "quotes_partner", "additive", "averaging",
+            "track_record", "dismisses", "defers", "cites_experience", "silent"]
+    nice = {"shares_features": "shares own features", "asks_features": "asks for partner's",
+            "quotes_partner": "uses partner's values", "additive": "talks of adding",
+            "averaging": "talks of averaging", "track_record": "cites track record",
+            "dismisses": "dismisses partner", "defers": "defers explicitly",
+            "cites_experience": "cites own training", "silent": "silent"}
+    grids = [("entrench", "must agree", CAT[0]), ("avg", "team = average", CAT[1]),
+             ("own", "scored individually", CAT[2])]
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(11, 4.2), gridspec_kw={"width_ratios": [1.5, 1]})
+    y = np.arange(len(cats))
+    h = 0.26
+    for j, (g, lab, col) in enumerate(grids):
+        if g not in out["by_grid"]:
+            continue
+        ax.barh(y + (j - 1) * h, [out["by_grid"][g][c] for c in cats], h, color=col, label=lab,
+                edgecolor="white", lw=1)
+    ax.set_yticks(y, [nice[c] for c in cats], fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlabel("share of twin-queries", fontsize=8, color=INK)
+    ax.set_title("What twins do with the partner, by team rule", fontsize=10, color=INK)
+    ax.legend(fontsize=7, frameon=False, loc="center right")
+    _style(ax)
+    ns = sorted(int(n) for n in out["equal_by_n"])
+    for c, col in (("shares_features", CAT[3]), ("dismisses", CAT[4]), ("track_record", CAT[5]),
+                   ("cites_experience", CAT[6]), ("additive", CAT[7])):
+        bx.plot(ns, [out["equal_by_n"][n][c] if n in out["equal_by_n"] else out["equal_by_n"][str(n)][c]
+                     for n in ns], "o-", color=col, lw=2, ms=5, label=nice[c])
+    bx.set_xscale("log")
+    bx.set_xticks(ns, [str(v) for v in ns])
+    bx.minorticks_off()
+    bx.set_xlabel("cases studied (equal pairs)", fontsize=8, color=INK)
+    bx.set_ylabel("share of twin-queries", fontsize=8, color=INK)
+    bx.set_title("Equal pairs, averaging + individual rules", fontsize=10, color=INK)
+    bx.legend(fontsize=7, frameon=False)
+    _style(bx)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
