@@ -1,0 +1,49 @@
+# d = 20, 200 joint queries (LogBook 2026-11-14): clear_history as in llm_haiku_sessions_clearhist100_own.yaml,
+# with 20 features per twin and T = 200. Simulated benchmarks (400 training cases): a joint model on
+# past queries needs ~100 queries to catch up with stacking the openings, and only slightly beats it
+# after that at lambda = 0. Smoke: 2 pairs at lambda = 0.
+# Launch: launch_grid.py --config <this> --prefix llm_haiku_sessions_clearhist200_d20_own --no-mixed --ns 400
+#         --lambdas 0.0 --alphas 1.0 --pairs 2
+experiment: llm_haiku_sessions_clearhist200_d20_own
+seed: 0
+n_runs: 1
+T: 200
+
+env:
+  d_A: 20
+  d_B: 20
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  alpha: 1.0
+  weak: B
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20], B: [b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16, b17, b18, b19, b20]}
+  budget: 25
+  study_all: true
+  team_rule: individual     # each twin scored on its own final (no team average)
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40                   # tool calls per query (the model tools need more)
+  structure_hint: false
+  partner_info: true
+  same_y: true
+  model_tools: true
+  models_in_training: true  # instances from the training phase on, with expression columns
+  prompt_style: clear_history
+  history_tools: true
+  max_budget_usd: 20.0
+  max_continues: 10
