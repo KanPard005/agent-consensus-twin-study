@@ -343,3 +343,25 @@ def test_clear_history_prompt_style():
         raise AssertionError("needs history_tools")
     except ValueError:
         pass
+
+
+def test_page_size_and_practice():
+    from consensus.sessions import TwinSession
+
+    api = make_api(budget=50, team_rule="individual", models_in_training=True, study_all=True,
+                   page_size=50, practice=True)
+    # The whole budget in one call.
+    assert "Training cases 1-50 of 50" in api.get_training_data("A", 50)
+    # Practice: start_queries refused until a model with cases has been fitted.
+    assert api.start_queries("A", "go").startswith("Error: before the queries")
+    api.new_model("A", "m", ["x1"], True)
+    api.fit_model("A", "m", {})
+    assert api.start_queries("A", "go") == "go"
+    kw = dict(structure_hint=False, partner_info=True, same_y=True, model_tools=True)
+    t = TwinSession("A", api, prompt_style="clear", **kw)
+    assert "(n from 1 to 50)" in t.system
+    assert "Before calling start_queries, build at least one model" in t.system
+    # Defaults keep the old prompt.
+    t0 = TwinSession("A", make_api(budget=50, team_rule="individual", models_in_training=True),
+                     prompt_style="clear", **kw)
+    assert "(n from 1 to 25)" in t0.system and "Before calling start_queries" not in t0.system

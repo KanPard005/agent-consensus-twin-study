@@ -166,7 +166,7 @@ You will first see {budget} labelled cases (their features and y) through a data
 should learn to regress y on them. {study_rule}
 
 Data API:
-- get_training_data(n): the next n labelled cases (n from 1 to 25).
+- get_training_data(n): the next n labelled cases (n from 1 to {page}).
 - start_queries(): finish studying and start the queries; you cannot get more labelled cases \
 after that, and its result explains what comes next (next_query, submit_opening, send_message, \
 read_messages and submit_prediction are used during the queries).
@@ -377,7 +377,15 @@ class ConsensusAPI:
         no_training: bool = False,
         elicit: bool = False,
         history_tools: bool = False,
+        page_size: int = 25,
+        practice: bool = False,
     ) -> None:
+        # Training budget vs tool practice (LogBook 2026-11-14): `page_size` is the most labelled
+        # cases get_training_data returns per call (a large one serves the whole budget in one
+        # call, removing the paging calls a long budget brings); with `practice` start_queries is
+        # refused until the twin has fitted a model with fit_model in training.
+        self.page_size, self.practice = int(page_size), practice
+        self.practiced = {"A": False, "B": False}
         # Past queries as data (LogBook 2026-11-14): add_case with a past query number, add_row
         # with values and y the twin gives itself, and a per-twin log (write_log / read_log).
         self.history_tools = history_tools
@@ -516,7 +524,7 @@ class ConsensusAPI:
         with self.cond:
             if self.phase[k] != "train":
                 return "Error: the training phase is over."
-            n = int(min(max(int(n), 1), 25, self.budget[k] - self.n_seen[k]))
+            n = int(min(max(int(n), 1), self.page_size, self.budget[k] - self.n_seen[k]))
             if n <= 0:
                 return f"You have used all {self.budget[k]} training cases."
             a, b = self.n_seen[k], self.n_seen[k] + n
@@ -562,6 +570,9 @@ class ConsensusAPI:
                     f"Error: study all {self.budget[k]} training cases first (you have seen "
                     f"{self.n_seen[k]})."
                 )
+            if self.practice and not self.practiced[k]:
+                return ("Error: before the queries, build a model on your labelled cases with "
+                        "new_model and fit it with fit_model.")
             self.phase[k] = "query"
             self.cond.notify_all()
             return intro.format(n_train=self.n_seen[k])
@@ -915,6 +926,7 @@ class ConsensusAPI:
                 row, _ = self._row(k, name, values or {})
                 current = row
             elif self.phase[k] == "train":
+                self.practiced[k] = self.practiced[k] or bool(m["rows"])
                 return regress(m["rows"], m["columns"], None, rows=f"cases in '{name}'")
             return regress(m["rows"], m["columns"], current, rows=f"cases in '{name}'")
 
@@ -941,6 +953,8 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     TOOL_DOCS = _tool_docs(prompt_style)  # noqa: N806 (shadows the module table on purpose)
+    TOOL_DOCS = {n: d.replace("1 to 25", f"1 to {api.page_size}")  # noqa: N806
+                 for n, d in TOOL_DOCS.items()}
 
     def text(s: str) -> dict:
         return {"content": [{"type": "text", "text": s}]}
@@ -1168,8 +1182,11 @@ class TwinSession:
             self.system = SYSTEM_CLEAR.format(
                 name=name, d=len(labels), names=", ".join(labels), budget=api.budget[name],
                 study_rule=(f"You must study all {api.budget[name]} labelled cases before the "
-                            "queries start." if api.study_all else ""),
+                            "queries start." if api.study_all else "")
+                + (" Before calling start_queries, build at least one model on your labelled "
+                   "cases with new_model and fit it with fit_model." if api.practice else ""),
                 ex1=labels[0], ex2=labels[1 % len(labels)], ex3=labels[-1],
+                page=api.page_size,
                 history_api=HISTORY_API if prompt_style == "clear_history" else "",
                 log_api=LOG_API if prompt_style == "clear_history" else "")
         self.live = Path(live_dir) if live_dir is not None else None
@@ -1262,7 +1279,10 @@ class TwinSession:
             effort=self.effort,
             max_budget_usd=self.max_budget_usd,
             cwd=tempfile.mkdtemp(prefix=f"twin{self.name}_"),
-            env={"MCP_TOOL_TIMEOUT": "3600000"},  # waiting for the partner can take minutes
+            # waiting for the partner can take minutes; a large training page needs a larger
+            # tool-output limit than the default
+            env={"MCP_TOOL_TIMEOUT": "3600000",
+                 **({"MAX_MCP_OUTPUT_TOKENS": "100000"} if self.api.page_size > 25 else {})},
             hooks={"PreCompact": [HookMatcher(hooks=[pre_compact])]},
         )
         prompt = ("Begin." if self.api.no_training
