@@ -365,3 +365,26 @@ def test_page_size_and_practice():
     t0 = TwinSession("A", make_api(budget=50, team_rule="individual", models_in_training=True),
                      prompt_style="clear", **kw)
     assert "(n from 1 to 25)" in t0.system and "Before calling start_queries" not in t0.system
+
+
+def test_next_query_open_past_the_cap():
+    """A twin that hits the call cap after its query is resolved can still move on."""
+    api = make_api(T=3, budget=25, team_rule="individual", cap=2)
+    out = {}
+
+    def twin(k):
+        api.get_training_data(k, 25)
+        api.start_queries(k, "go")
+        api.call(k, "next_query", {}, lambda: api.next_query(k))
+        api.call(k, "submit_opening", {}, lambda: api.submit_opening(k, 0.0))
+        api.call(k, "submit_prediction", {}, lambda: api.submit_prediction(k, 0.0))
+        for _ in range(3):  # past the cap
+            api.call(k, "read_messages", {}, lambda: api.read_messages(k))
+        out[k] = api.call(k, "next_query", {}, lambda: api.next_query(k))
+
+    ths = [threading.Thread(target=twin, args=(k,), daemon=True) for k in "AB"]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(timeout=10)
+    assert all(out.get(k, "").startswith("Query 2") for k in "AB"), out

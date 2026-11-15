@@ -449,7 +449,10 @@ class ConsensusAPI:
         with self.cond:
             n = self.calls[k].get(q, 0) + 1
             self.calls[k][q] = n
-        if self.phase[k] == "query" and q >= 0 and n > self.cap and tool != "submit_prediction":
+        # submit_prediction and next_query stay open past the cap: a twin at the cap must still
+        # be able to finish its query and move on (next_query refuses unresolved queries itself).
+        if (self.phase[k] == "query" and q >= 0 and n > self.cap
+                and tool not in ("submit_prediction", "next_query")):
             res = (
                 f"Tool-call limit for query {q + 1} reached: call submit_prediction now (or "
                 "next_query if the query is resolved)."
