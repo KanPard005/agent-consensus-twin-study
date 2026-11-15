@@ -9,10 +9,17 @@ queries have accumulated. Per cell (lambda) and window of queries:
   OLS on both twins' features (what a back-filled joint model gives), and the sum of openings
   (the population-optimal combination at lambda = 0);
 - usage: twins that have created a model with a partner-feature column by the end of the window,
-  twins that fitted such a model in the window, and past-query add_case calls in the window.
+  twins that fitted such a model in the window, twins that regressed y on the partner's opening in
+  the window ("stack"), and past-query add_case calls in the window;
+- per twin: the first query at which it fits a partner-feature model (adoption), and the number of
+  tool calls in training.
+
+`--cells` compares training budgets (eq<n>, LogBook 2026-11-14 entrenchment arm): does seeing more
+labelled cases before the queries change whether twins adopt the joint model?
 
 Usage:
     python scripts/history_analysis.py [--prefix llm_haiku_sessions_clearhist100_own] [--window 25]
+        [--lambdas 0.0 0.5] [--cells eq400]
 Writes results/history/<timestamp>/{stats.json, table.md}.
 """
 
@@ -53,9 +60,9 @@ def partner_pattern(labels: dict, k: str) -> re.Pattern:
     return re.compile(r"\b(" + "|".join(map(re.escape, other)) + r")\b")
 
 
-def load(prefix: str, lam: str) -> list[dict]:
+def load(prefix: str, lam: str, cell: str = "eq400") -> list[dict]:
     pairs = []
-    for d in sorted((ROOT / "results").glob(f"{prefix}_lam{lam}_al1.0_eq400/20*")):
+    for d in sorted((ROOT / "results").glob(f"{prefix}_lam{lam}_al1.0_{cell}/20*")):
         sf = d / "summary.json"
         if not sf.exists():
             continue
@@ -69,16 +76,21 @@ def load(prefix: str, lam: str) -> list[dict]:
 
 
 def usage(calls: list[dict], pat: re.Pattern, T: int) -> dict[str, np.ndarray]:
-    """Per query: created a partner-feature model (cumulative), fitted one, past add_case calls."""
+    """Per query: created a partner-feature model (cumulative), fitted one, regressed on the
+    partner's opening, past add_case calls; and the number of training-phase calls."""
     joint_names: set[str] = set()
     created = np.zeros(T, bool)
     fitted = np.zeros(T, bool)
+    stack = np.zeros(T, bool)
     past = np.zeros(T)
+    n_train = sum(c["q"] < 0 for c in calls)
     for c in calls:
         q = c["q"]
         if q < 0 or q >= T:
             continue
         a = c.get("args", {})
+        if c["tool"] == "regress" and "partner_opening" in (a.get("predictors") or []):
+            stack[q] = True
         if c["tool"] == "new_model" and any(pat.search(str(x)) for x in a.get("columns") or []):
             joint_names.add(str(a.get("name")))
             created[q:] = True
@@ -86,14 +98,15 @@ def usage(calls: list[dict], pat: re.Pattern, T: int) -> dict[str, np.ndarray]:
             fitted[q] = True
         elif c["tool"] == "add_case" and a.get("query") is not None:
             past[q] += 1
-    return dict(created=created, fitted=fitted, past=past)
+    return dict(created=created, fitted=fitted, stack=stack, past=past, n_train=n_train)
 
 
 def cell(pairs: list[dict], window: int) -> dict:
     T = min(len(p["recs"]) for p in pairs)
     W = [(a, min(a + window, T)) for a in range(0, T, window)]
     acc = {k: [[] for _ in W] for k in ("open", "final", "stack", "joint", "sum")}
-    use = {k: [[] for _ in W] for k in ("created", "fitted", "past")}
+    use = {k: [[] for _ in W] for k in ("created", "fitted", "stack", "past")}
+    first_fit, n_train = [], []
     for p in pairs:
         R = p["recs"][:T]
         y = np.array([r["y"] for r in R])
@@ -112,11 +125,19 @@ def cell(pairs: list[dict], window: int) -> dict:
             for k in "AB":
                 use["created"][i].append(bool(U[k]["created"][b - 1]))
                 use["fitted"][i].append(bool(U[k]["fitted"][s].any()))
+                use["stack"][i].append(bool(U[k]["stack"][s].any()))
                 use["past"][i].append(float(U[k]["past"][s].sum()))
+        for k in "AB":
+            f = np.flatnonzero(U[k]["fitted"])
+            first_fit.append(int(f[0]) + 1 if len(f) else None)
+            n_train.append(U[k]["n_train"])
     out = {k: [float(np.nanmean(v)) if v else float("nan") for v in vals] for k, vals in acc.items()}
     out["twins_with_joint_model"] = [int(sum(v)) for v in use["created"]]
     out["twins_fitting_joint_model"] = [int(sum(v)) for v in use["fitted"]]
+    out["twins_stacking"] = [int(sum(v)) for v in use["stack"]]
     out["past_add_case"] = [int(sum(v)) for v in use["past"]]
+    out["first_fit_query"] = first_fit
+    out["training_calls_median"] = float(np.median(n_train))
     out.update(windows=W, n_pairs=len(pairs), cost=float(sum(p["cost"] for p in pairs)))
     return out
 
@@ -127,14 +148,16 @@ def main(argv: list[str] | None = None) -> Path:
     ap.add_argument("--prefix", default="llm_haiku_sessions_clearhist100_own")
     ap.add_argument("--lambdas", nargs="+", default=["0.0", "0.5"])
     ap.add_argument("--window", type=int, default=25)
+    ap.add_argument("--cells", nargs="+", default=["eq400"], help="training budgets, e.g. eq25 eq400")
     args = ap.parse_args(argv)
-    cells = {lam: cell(P, args.window) for lam in args.lambdas if (P := load(args.prefix, lam))}
+    cells = {f"{lam} {c}": cell(P, args.window) for lam in args.lambdas for c in args.cells
+             if (P := load(args.prefix, lam, c))}
     fmt = lambda v: " / ".join(f"{x:.2f}" for x in v)  # noqa: E731
     ints = lambda v: " / ".join(str(x) for x in v)  # noqa: E731
     lines = []
     for lam, c in cells.items():
         win = ", ".join(f"{a + 1}–{b}" for a, b in c["windows"])
-        lines += [f"\nλ = {lam}: {c['n_pairs']} pairs, cost ${c['cost']:.2f}; windows {win}", "",
+        lines += [f"\nλ, cell = {lam}: {c['n_pairs']} pairs, cost ${c['cost']:.2f}; windows {win}", "",
                   "| per window | values |", "|---|---|",
                   f"| MSE openings | {fmt(c['open'])} |", f"| MSE finals | {fmt(c['final'])} |",
                   f"| online OLS on the two openings | {fmt(c['stack'])} |",
@@ -143,6 +166,10 @@ def main(argv: list[str] | None = None) -> Path:
                   f"| twins with a partner-feature model (of {2 * c['n_pairs']}) "
                   f"| {ints(c['twins_with_joint_model'])} |",
                   f"| twins fitting it in the window | {ints(c['twins_fitting_joint_model'])} |",
+                  f"| twins regressing on the partner's opening | {ints(c['twins_stacking'])} |",
+                  f"| first query fitting a joint model (per twin) "
+                  f"| {', '.join('-' if x is None else str(x) for x in c['first_fit_query'])} |",
+                  f"| median training-phase tool calls | {c['training_calls_median']:.0f} |",
                   f"| past-query add_case calls | {ints(c['past_add_case'])} |"]
     run_out = make_run_dir(str(ROOT / "results"), "history")
     (run_out / "stats.json").write_text(json.dumps(cells, indent=2))
