@@ -19,11 +19,13 @@ from consensus.plotting_consensus import CAT, INK, MUTED, _style  # noqa: E402
 ARMS = (("untold", "not told"), ("told", "told targets differ"))
 
 
-def plot_related(cells: dict, cs: list[float], path: Path, sigma: float = 0.5) -> None:
+def plot_related(cells: dict, cs: list[float], path: Path, sigma: float = 0.5,
+                 series: tuple = ARMS) -> None:
     """Left: coefficient on the partner's opening in the twin's final (late queries), against
     the cosine c between the two targets. Right: MSE of the finals against the twin's own y.
 
-    Points with error bars: mean ± s.e. over twins, per prompt arm (slightly offset). Reference
+    Points with error bars: mean ± s.e. over twins, per series (prompt arm, or model; keys of
+    `cells` are "<c>_<series key>"), slightly offset. Reference
     lines (population, Sigma = I, unit weights): the best stacking coefficient c and MSE
     1 - c^2 + sigma^2; averaging (coefficient 0.5, MSE 1.5 - c + sigma^2); own opening alone
     (0, 1 + sigma^2).
@@ -42,7 +44,7 @@ def plot_related(cells: dict, cs: list[float], path: Path, sigma: float = 0.5) -
         for name, beta_line, mse_line, ls in refs:
             ax.plot(grid, beta_line if key == "beta" else mse_line, ls, color=MUTED, lw=1,
                     label=name)
-        for i, (arm, label) in enumerate(ARMS):
+        for i, (arm, label) in enumerate(series):
             xs, ms, ses = [], [], []
             for c in cs:
                 vals = np.array(cells.get(f"{c}_{arm}", {}).get(key, []), float)

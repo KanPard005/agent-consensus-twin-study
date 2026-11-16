@@ -155,6 +155,9 @@ def main() -> None:
     p.add_argument("--cs", nargs="+", default=["1.0", "0.5", "0.0", "-0.5"])
     p.add_argument("--arms", nargs="+", default=["untold", "told"])
     p.add_argument("--late", type=int, default=20, help="late queries start at this index")
+    p.add_argument("--compare", nargs="*", default=None, metavar="PREFIX=LABEL",
+                   help="also plot these experiment prefixes side by side (first arm only), "
+                        "e.g. llm_haiku_sessions_related=Haiku llm_sonnet_sessions_related=Sonnet")
     args = p.parse_args()
     out = make_run_dir(ROOT / "results", "related")
     cells, rows, det = {}, [], []
@@ -197,7 +200,21 @@ def main() -> None:
     (out / "table.md").write_text(table + "\n")
     (out / "detection.md").write_text("\n".join(det))
     (out / "stats.json").write_text(json.dumps(cells, indent=1, default=float))
-    plot_related(cells, sorted({float(c) for c in args.cs}, reverse=True), out / "related.png")
+    cs_sorted = sorted({float(c) for c in args.cs}, reverse=True)
+    plot_related(cells, cs_sorted, out / "related.png")
+    if args.compare:
+        # One series per experiment prefix, on the first arm: model against model.
+        comp, series = {}, []
+        for item in args.compare:
+            prefix, label = item.split("=", 1)
+            series.append((prefix, label))
+            for c in args.cs:
+                tw = [twin_stats(pr, k, args.late) for pr in load_pairs(prefix, c, args.arms[0])
+                      for k in "AB" if not any(pr["errors"].values())]
+                if tw:
+                    comp[f"{float(c)}_{prefix}"] = {key: [t[key] for t in tw]
+                                                    for key in ("beta", "mse_late")}
+        plot_related(comp, cs_sorted, out / "compare.png", series=tuple(series))
     print(table)
     print(f"\nwritten to {out}")
 
