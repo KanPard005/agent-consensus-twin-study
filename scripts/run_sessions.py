@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from run import train_twins  # noqa: E402
 
-from consensus.data import build_env  # noqa: E402
+from consensus.data import RelatedTargetsEnv, build_env  # noqa: E402
 from consensus.sessions import ConsensusAPI, TwinSession, run_pair  # noqa: E402
 from consensus.utils import git_hash, load_config, make_run_dir, run_rng  # noqa: E402
 
@@ -54,12 +54,27 @@ def main(argv: list[str] | None = None) -> Path:
         yaml.safe_dump({**cfg, "_git_commit": git_hash(ROOT)}, sort_keys=False)
     )
     log.info("results in %s", run_dir)
+    if isinstance(env, RelatedTargetsEnv):  # the weights of both targets, for the analysis
+        (run_dir / "env.json").write_text(json.dumps(
+            {"w_A": env.w_A.tolist(), "w_B": env.w_B.tolist(), "v_A": env.v_A.tolist(),
+             "v_B": env.v_B.tolist(), "target_align": env.target_align, "sigma": env.sigma,
+             "Sigma": env.Sigma.tolist()}, indent=2))
     summary = {}
     first = cfg.get("first_run", 0)
     for r in range(first, first + cfg["n_runs"]):
         rng = run_rng(seed, r)
-        A, B = train_twins(env, cfg["train"], rng)  # same draws as scripts/run.py
-        x_A, x_B, y = env.sample(T, rng)
+        if isinstance(env, RelatedTargetsEnv):
+            # Related targets (LogBook 2026-11-16): each twin studies and is scored on its own
+            # target. Same draws as train_twins + env.sample, so c = 1 reproduces the base data.
+            tx_A, _, ty_A, _ = env.sample_pair(cfg["train"]["n_A"], rng)
+            _, tx_B, _, ty_B = env.sample_pair(cfg["train"]["n_B"], rng)
+            train = {"A": (tx_A, ty_A), "B": (tx_B, ty_B)}
+            x_A, x_B, y_A, y_B = env.sample_pair(T, rng)
+            y = {"A": y_A, "B": y_B}
+        else:
+            A, B = train_twins(env, cfg["train"], rng)  # same draws as scripts/run.py
+            train = {"A": A.training_data(), "B": B.training_data()}
+            x_A, x_B, y = env.sample(T, rng)
         # Training budgets: agent.budget for both, or agent.budget_long / budget_short for a
         # mixed pair, with the long-trained twin alternating A, B, A, ... by pair index (so the
         # names cannot bias the comparison).
@@ -69,7 +84,7 @@ def main(argv: list[str] | None = None) -> Path:
         else:
             long, budget = None, ag["budget"]
         api = ConsensusAPI(
-            {"A": A.training_data(), "B": B.training_data()},
+            train,
             {"A": x_A, "B": x_B},
             y,
             ag["labels"],
@@ -117,6 +132,8 @@ def main(argv: list[str] | None = None) -> Path:
                 same_y=ag.get("same_y", False),
                 model_tools=ag.get("model_tools", False),
                 prompt_style=ag.get("prompt_style", "standard"),
+                partner_target=ag.get("partner_target", "same"),
+                query_api=ag.get("query_api", False),
                 max_budget_usd=ag["max_budget_usd"],
                 max_continues=ag["max_continues"],
                 live_dir=tr,
@@ -142,6 +159,9 @@ def main(argv: list[str] | None = None) -> Path:
             "failed": int(api.failed.sum()),
             "messages": len(api.messages),
             "team_score": float(np.mean(sq)) if sq else None,
+            # Each twin's mean squared error of its final against its own target.
+            "own_mse": {k: float(np.nanmean([(rc["final"][k] - rc["y_own"][k]) ** 2
+                                             for rc in done])) if done else None for k in "AB"},
         }
         log.info("run %d: $%.2f, %d/%d queries, %d failed, %d messages", r,
                  summary[f"run{r}"]["cost_usd"], api.resolved.sum(), T, api.failed.sum(),

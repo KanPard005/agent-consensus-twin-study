@@ -316,14 +316,72 @@ class ProductTwinEnv(LinearTwinEnv):
         return cls(lin.w_A, lin.w_B, lin.Sigma, lin.sigma, mu=cfg.get("mu", 1.0))
 
 
+def tilted_direction(v: np.ndarray, c: float, rng: np.random.Generator) -> np.ndarray:
+    """A vector with the norm of v and cosine c with it: c v + sqrt(1 - c^2) |v| u, where u is a
+    random unit vector orthogonal to v."""
+    if not -1.0 <= c <= 1.0:
+        raise ValueError(f"cosine must be in [-1, 1], got {c}")
+    u = rng.standard_normal(len(v))
+    nv = float(np.linalg.norm(v))
+    if nv > 0:
+        u -= (u @ v) / nv**2 * v  # remove the component along v
+    u /= np.linalg.norm(u)
+    return c * v + np.sqrt(1.0 - c**2) * nv * u
+
+
+@dataclass
+class RelatedTargetsEnv(LinearTwinEnv):
+    """Each twin predicts its own target (LogBook note 2026-11-16, "Alignment sweep: twins
+    predicting related targets"):
+
+        y_A = <x^A, w^A> + <x^B, w^B> + eps,      y_B = <x^A, v^A> + <x^B, v^B> + eps,
+
+    with cos(w^A, v^A) = cos(w^B, v^B) = c, |v^A| = |w^A|, |v^B| = |w^B| and the noise eps
+    shared, so c = 1 gives y_A = y_B (the base task). At Sigma = I twin A's best use of B's
+    opening <x^B, v^B> is the coefficient c, which removes a fraction c^2 of what B's raw
+    features would remove.
+
+    `sample` returns (x^A, x^B, y_A), so code that knows only one target sees A's;
+    `sample_pair` also returns y_B from the same draws.
+    """
+
+    v_A: np.ndarray = None  # B's target weights on A's features
+    v_B: np.ndarray = None  # B's target weights on B's features
+    target_align: float = 1.0
+
+    def sample_pair(self, n: int, rng: np.random.Generator):
+        """(x^A, x^B, y_A, y_B); the same random draws as `sample`."""
+        x = rng.standard_normal((n, self.d_A + self.d_B)) @ self._L.T
+        eps = self.sigma * rng.standard_normal(n)
+        x_A, x_B = x[:, : self.d_A], x[:, self.d_A :]
+        return x_A, x_B, x @ self.w + eps, x_A @ self.v_A + x_B @ self.v_B + eps
+
+    def sample(self, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x_A, x_B, y_A, _ = self.sample_pair(n, rng)
+        return x_A, x_B, y_A
+
+    @classmethod
+    def from_config(cls, cfg: dict, rng: np.random.Generator) -> "RelatedTargetsEnv":
+        """The base env from the same block (e.g. `cov: controlled`), then B's target weights
+        tilted by cosine `target_align` (drawn from rng after the base env)."""
+        lin = LinearTwinEnv.from_config(cfg, rng)
+        c = float(cfg["target_align"])
+        v_A, v_B = tilted_direction(lin.w_A, c, rng), tilted_direction(lin.w_B, c, rng)
+        return cls(lin.w_A, lin.w_B, lin.Sigma, lin.sigma, v_A=v_A, v_B=v_B, target_align=c)
+
+
 def build_env(cfg: dict, rng: np.random.Generator) -> LinearTwinEnv:
-    """Environment from the `env` config block; `task: logistic` gives binary labels and
-    `task: product` multiplies the two blocks' signals (`ProductTwinEnv`)."""
+    """Environment from the `env` config block; `task: logistic` gives binary labels,
+    `task: product` multiplies the two blocks' signals (`ProductTwinEnv`), and `task: related`
+    gives each twin its own target (`RelatedTargetsEnv`)."""
     task = cfg.get("task", "regression")
     if task == "regression":
         return LinearTwinEnv.from_config(cfg, rng)
+    if task == "related":
+        return RelatedTargetsEnv.from_config(cfg, rng)
     if task == "logistic":
         return LogisticTwinEnv.from_config(cfg, rng)
     if task == "product":
         return ProductTwinEnv.from_config(cfg, rng)
-    raise ValueError(f"unknown task {task!r}; choose 'regression', 'logistic' or 'product'")
+    raise ValueError(
+        f"unknown task {task!r}; choose 'regression', 'logistic', 'product' or 'related'")

@@ -233,7 +233,7 @@ so you both work on the same case);
 - then you and your partner can communicate freely: send_message sends a message, and \
 read_messages shows your partner's opening and new messages (it waits until your partner sends \
 something new, submits a prediction, or is also waiting);
-{rule_par}
+{rule_par}{query_api}
 
 At any time during the queries you can also:
 - train new models with the regression API: regress can now also use own_opening and \
@@ -244,6 +244,43 @@ whose values you give;
 - make use of your partner's features in any way you want{models_line}.
 
 You can make at most {cap} tool calls per query. Call next_query to begin."""
+
+# Related targets (LogBook 2026-11-16): what a twin is told about its partner's target.
+# `partner_target: same` is PARTNER_CLEAR (both predict the same y); `untold` drops that clause and
+# says nothing about the partner's target; `told` says the partner predicts its own quantity,
+# different from but related to y, whose value the twin never sees. Nothing says how related, or
+# how to use the partner's opening.
+PARTNER_UNTOLD = """\
+Your features are {own}; your partner's features are {other_feats}: your features are different. \
+Your partner may have information that you do not."""
+
+PARTNER_TOLD = """\
+Your features are {own}; your partner's features are {other_feats}: your features are different. \
+Your partner also predicts its own quantity for each case, which is different from your y but \
+related to it; you never see its value. Your partner may have information that you do not."""
+
+# With related targets each twin sees only its own y after a query (and not the partner's error,
+# which would give away the partner's y).
+RULE_INDIVIDUAL_RELATED = """\
+- when you are ready, submit_prediction records your own final estimate of y (once per query). \
+It waits until your partner has also submitted its final; then both finals are revealed to both \
+of you, and the true y to you.
+You are scored by the squared error of your own final estimate, and your partner by the squared \
+error of its own{ending}."""
+
+# `query_api` (LogBook 2026-11-16, Kanad's spec): the query tools listed function by function at
+# start_queries, like the data and regression APIs in the system prompt, after the per-query steps.
+QUERY_API = """
+
+Query API:
+- next_query(): the features of the next case; it waits until your partner has also asked, so \
+you both work on the same case.
+- submit_opening(y): records your own estimate of y for the current case, before you talk.
+- send_message(text): sends a message to your partner.
+- read_messages(): shows your partner's opening and new messages; it waits until your partner \
+sends something new, submits a prediction, or is also waiting.
+- submit_prediction(y): records your own final estimate of y (once per query); it waits until \
+your partner has also submitted its final, then {reveal}."""
 
 # `prompt_style: clear_models` (LogBook 2026-11-14): the clear prompt plus one freedom, stated
 # outright: a new model can be built on any features the twin sees, its partner's included.
@@ -410,7 +447,16 @@ class ConsensusAPI:
         self.labels, self.study_all = labels, study_all
         self.Xtr = {k: train[k][0][: self.budget[k]] for k in "AB"}
         self.ytr = {k: train[k][1][: self.budget[k]] for k in "AB"}
-        self.qx, self.y, self.T = queries, np.asarray(y, float), len(y)
+        # Related targets (LogBook 2026-11-16): y may be {"A": y_A, "B": y_B}, each twin's own
+        # target; training labels, reveals, scores and model rows then use the twin's own y.
+        # `self.y` stays A's target for code that knows only one.
+        self.related = isinstance(y, dict)
+        self.ys = ({k: np.asarray(y[k], float) for k in "AB"} if self.related
+                   else {k: np.asarray(y, float) for k in "AB"})
+        self.qx, self.y, self.T = queries, self.ys["A"], len(self.ys["A"])
+        if self.related and team_rule != "individual":
+            raise ValueError("related targets need team_rule 'individual' (one shared prediction "
+                             "cannot be scored against two targets)")
         self.tol, self.max_attempts, self.penalty = tol, max_attempts, penalty
         self.max_chars, self.cap = max_chars, cap
         self.n_seen = {k: 0 for k in "AB"}
@@ -477,7 +523,7 @@ class ConsensusAPI:
                         **dict(zip(lab, map(float, self.qx[k][q]))),
                         "own_opening": float(self.opening[k][q]),
                         "partner_opening": float(self.opening[o][q]),
-                        "y": float(self.y[q]),
+                        "y": float(self.ys[k][q]),
                     }
                 )
         return rows
@@ -487,6 +533,7 @@ class ConsensusAPI:
         return {
             "t": q,
             "y": float(self.y[q]),
+            "y_own": {k: float(self.ys[k][q]) for k in "AB"},
             "x": {k: [float(v) for v in self.qx[k][q]] for k in "AB"},
             "opening": {k: float(self.opening[k][q]) for k in "AB"},
             "attempts": {k: [float(v) for v in self.attempts[k][q]] for k in "AB"},
@@ -711,6 +758,16 @@ class ConsensusAPI:
                     if q == self.T - 1
                     else " Call next_query for the next case."
                 )
+                if self.team_rule == "individual" and self.related:
+                    # Only the twin's own y and error: the partner's error against its own target
+                    # would reveal the partner's y (up to sign).
+                    pf = self.attempts[o][q][0] if self.attempts[o][q] else float("nan")
+                    yk = self.ys[k][q]
+                    return (
+                        f"Both finals are in: yours {float(y):.3f}, your partner's {pf:.3f}. The "
+                        f"true y was {yk:.3f}; your squared error {(float(y) - yk) ** 2:.3f}."
+                        + tail
+                    )
                 if self.team_rule == "individual":
                     pf = self.attempts[o][q][0] if self.attempts[o][q] else float("nan")
                     return (
@@ -874,7 +931,7 @@ class ConsensusAPI:
             m = self.models[k][name]
             m["pending"].pop(q, None)
             m["rows"] = [r for r in m["rows"] if r.get("_q") != q]
-            m["rows"].append({**row, "y": float(self.y[q]), "_q": q})
+            m["rows"].append({**row, "y": float(self.ys[k][q]), "_q": q})
             return (f"Query {query} added to '{name}' with its y ({len(m['rows'])} cases with y "
                     "so far).")
 
@@ -939,7 +996,7 @@ class ConsensusAPI:
             for m in self.models[k].values():
                 row = m["pending"].pop(q, None)
                 if row is not None:
-                    m["rows"].append({**row, "y": float(self.y[q]), "_q": q})
+                    m["rows"].append({**row, "y": float(self.ys[k][q]), "_q": q})
 
 
 def _tool_docs(prompt_style: str) -> dict[str, str]:
@@ -1086,17 +1143,35 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
 
 def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bool,
                same_y: bool = False, model_tools: bool = False,
-               prompt_style: str = "standard") -> str:
+               prompt_style: str = "standard", partner_target: str = "same",
+               query_api: bool = False) -> str:
     """The start_queries result for twin k (`{n_train}` is filled in at the call)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
+    if partner_target not in ("same", "untold", "told"):
+        raise ValueError(f"partner_target must be 'same', 'untold' or 'told', got {partner_target!r}")
+    if prompt_style not in ("clear", "clear_models", "clear_history") and (
+            partner_target != "same" or query_api):
+        raise ValueError("partner_target and query_api need a clear prompt style")
+    if api.related and partner_target == "same":
+        raise ValueError("related targets: partner_target must be 'untold' or 'told'")
     if prompt_style in ("clear", "clear_models", "clear_history"):
-        rule = {"average": RULE_AVERAGE, "individual": RULE_INDIVIDUAL,
-                "consensus": RULE_CONSENSUS}[api.team_rule].format(
-            tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}")
+        if api.related:
+            rule = RULE_INDIVIDUAL_RELATED.format(
+                ending=" final estimate of its own quantity" if partner_target == "told" else "")
+            reveal = "both finals are revealed to both of you, and the true y to you"
+        else:
+            rule = {"average": RULE_AVERAGE, "individual": RULE_INDIVIDUAL,
+                    "consensus": RULE_CONSENSUS}[api.team_rule].format(
+                tol=f"{api.tol:g}", max_attempts=api.max_attempts, penalty=f"{api.penalty:g}")
+            reveal = ("both finals and the true y are revealed to both of you"
+                      if api.team_rule == "individual" else "the result is revealed")
+        partner = {"same": PARTNER_CLEAR, "untold": PARTNER_UNTOLD,
+                   "told": PARTNER_TOLD}[partner_target]
         return START_QUERIES_CLEAR.format(
             opening=OPENING_CLEAR.format(n_train="{n_train}", other=api.other(k)),
-            partner_par=PARTNER_CLEAR.format(own=", ".join(labels), other_feats=", ".join(other)),
+            partner_par=partner.format(own=", ".join(labels), other_feats=", ".join(other)),
             T=api.T, rule_par=rule, cap=api.cap,
+            query_api=QUERY_API.format(reveal=reveal) if query_api else "",
             models_line=(MODELS_LINE_CLEAR if prompt_style == "clear_models"
                          else MODELS_LINE_CLEAR + HISTORY_LINES
                          if prompt_style == "clear_history" else ""))
@@ -1153,12 +1228,14 @@ class TwinSession:
         live_dir: str | Path | None = None,
         run: int = 0,
         prompt_style: str = "standard",
+        partner_target: str = "same",
+        query_api: bool = False,
     ) -> None:
         self.name, self.api, self.model, self.effort = name, api, model, effort
         self.max_budget_usd, self.max_continues = max_budget_usd, max_continues
         self.prompt_style = prompt_style
         self.intro = intro_text(api, name, structure_hint, partner_info, same_y, model_tools,
-                                prompt_style)
+                                prompt_style, partner_target, query_api)
         self.model_tools = model_tools
         labels = api.labels[name]
         self.system = SYSTEM_TRAIN.format(
