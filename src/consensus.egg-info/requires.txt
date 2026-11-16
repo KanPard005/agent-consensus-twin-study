@@ -2,6 +2,9 @@ numpy>=1.24
 matplotlib>=3.7
 pyyaml>=6.0
 
+[agents]
+claude-agent-sdk>=0.2.182
+
 [dev]
 pytest>=7
 ruff>=0.4

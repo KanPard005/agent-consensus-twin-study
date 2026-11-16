@@ -98,7 +98,12 @@ def twin_stats(p: dict, k: str, late: int) -> dict:
     lim = (related_limits(w_A, w_B, v_B, env["sigma"]) if k == "A"
            else related_limits(v_B, v_A, w_A, env["sigma"]))
     sl = slice(late, None)
-    b = ols(np.column_stack([own[sl], par[sl]]), fin[sl])
+    # Placeholder openings: a twin that predicts from a joint model may submit 0 as its opening
+    # (pilot c = 0 told, twin A from query 28). Its opening is then not an own-feature estimate,
+    # so the opening-based weights (beta, WOA) are left out for it.
+    placeholder = bool(np.mean(own[sl] == 0.0) > 0.5)
+    b = (np.full(3, np.nan) if placeholder
+         else ols(np.column_stack([own[sl], par[sl]]), fin[sl]))
     gap = par - own
     big = np.abs(gap) > 0.2
     woa = np.where(big, (fin - own) / np.where(big, gap, 1.0), np.nan)
@@ -122,7 +127,8 @@ def twin_stats(p: dict, k: str, late: int) -> dict:
                      and c["args"].get("name") in joint)
     return {
         "beta": float(b[2]), "own_coef": float(b[1]),
-        "woa": float(np.nanmean(np.clip(woa[sl], -1, 2))),
+        "woa": float("nan") if placeholder else float(np.nanmean(np.clip(woa[sl], -1, 2))),
+        "placeholder": placeholder,
         "away": float(away[sl][big[sl]].mean()) if big[sl].any() else float("nan"),
         "mse_late": float(np.nanmean((fin[sl] - y[sl]) ** 2)),
         "mse_open_late": float(np.nanmean((own[sl] - y[sl]) ** 2)),
@@ -162,7 +168,7 @@ def main() -> None:
             cell = {key: [t[key] for t in tw] for key in
                     ("beta", "own_coef", "woa", "away", "mse_late", "mse_open_late",
                      "mse_stack_late", "mse_avg_late", "detect", "raw_share", "joint_model",
-                     "joint_used")}
+                     "joint_used", "placeholder")}
             cell["mse_windows"] = np.nanmean([t["mse_windows"] for t in tw], 0).tolist()
             cell["limits"] = {k: mean([t["limits"][k] for t in tw]) for k in tw[0]["limits"]}
             cell["n_pairs"], cell["cost"] = len(pairs), sum(pr["cost"] for pr in pairs)
@@ -176,15 +182,16 @@ def main() -> None:
                 + f" | {mean(cell['mse_open_late']):.2f} | {mean(cell['mse_avg_late']):.2f} | "
                 f"{mean(cell['mse_stack_late']):.2f} | {L['stack']:.2f} | "
                 f"{sum(cell['detect'])}/{len(tw)} | {mean(cell['raw_share']):.2f} | "
-                f"{sum(cell['joint_model'])} / {sum(cell['joint_used'])} | ${cell['cost']:.2f} |")
+                f"{sum(cell['joint_model'])} / {sum(cell['joint_used'])} | {sum(cell['placeholder'])} | "
+                f"${cell['cost']:.2f} |")
             for pr, t in ((pr, twin_stats(pr, k, args.late)) for pr in pairs for k in "AB"):
                 if t["hits"]:
                     det.append(f"### c={c} {arm} {pr['run']} (first q{t['detect_first_q']})\n"
                                + "\n".join(f"> {h[:400]}" for h in t["hits"]) + "\n")
     head = ("| c | arm | pairs | β partner (best) | own coef | WOA (best) | moves away | "
             "MSE finals by window | own opening late | average late | online stack late | "
-            "stack pop. | detect | raw-feature share | joint models built / used | cost |\n"
-            "|" + "---|" * 16)
+            "stack pop. | detect | raw-feature share | joint models built / used | placeholder openings | cost |\n"
+            "|" + "---|" * 17)
     table = head + "\n" + "\n".join(rows)
     (out / "table.md").write_text(table + "\n")
     (out / "detection.md").write_text("\n".join(det))
