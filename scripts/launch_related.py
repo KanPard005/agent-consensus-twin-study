@@ -2,7 +2,7 @@
 
 Usage:
     python scripts/launch_related.py [--cs 1.0 0.5 0.0 -0.5] [--arms untold told] [--pairs 8]
-        [--jobs 16] [--dry-run]
+        [--jobs 16] [--prefix ...] [--set agent.model=... agent.effort=...] [--dry-run]
 
 Each job runs `scripts/run_sessions.py configs/llm_haiku_sessions_related.yaml` for one pair
 (first_run = pair index) with env.target_align = c and agent.partner_target = arm, in the
@@ -35,6 +35,8 @@ def main() -> None:
     p.add_argument("--arms", nargs="+", default=["untold", "told"])
     p.add_argument("--pairs", type=int, default=8)
     p.add_argument("--jobs", type=int, default=16)
+    p.add_argument("--set", nargs="*", default=[], dest="extra",
+                   help="extra config overrides for every job, e.g. agent.model=claude-sonnet-5-5")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
     jobs = []
@@ -45,7 +47,7 @@ def main() -> None:
             continue
         log = ROOT / "results" / "logs" / f"{exp}_r{r}.log"
         jobs.append((exp, r, [f"env.target_align={c}", f"agent.partner_target={arm}",
-                              f"first_run={r}", "n_runs=1", f"experiment={exp}"], log))
+                              f"first_run={r}", "n_runs=1", f"experiment={exp}", *args.extra], log))
     print(f"{len(jobs)} jobs, {args.jobs} at a time")
     if args.dry_run:
         for j in jobs[:8]:
