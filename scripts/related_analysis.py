@@ -39,9 +39,10 @@ from consensus.utils import make_run_dir  # noqa: E402
 DIFFERENT = re.compile(
     r"(different|not the same|another|its own|my own|your own|separate|distinct)\s+"
     r"(target|quantity|quantities|y\b|label|variable|outcome|objective|thing)"
+    r"|(target|quantity|quantities|y|ys|labels?|outcomes?)\s+(?:is|are|seem|seems|might be|may be"
+    r"|must be)\s+(?:a\s+)?(?:different|not the same|unrelated|related)"
     r"|predict(?:ing|s)?\s+(?:something|a)\s+different|not\s+predicting\s+the\s+same"
-    r"|(?:our|the)\s+(?:targets|quantities|ys|labels)\s+(?:are|seem|might|may)\s+"
-    r"(?:be\s+)?(?:different|not)",
+    r"|(?:true\s+)?y\s*(?:values|'s)?\s+(?:don't|do not|doesn't)\s+match",
     re.IGNORECASE)
 WINDOWS = 4
 
