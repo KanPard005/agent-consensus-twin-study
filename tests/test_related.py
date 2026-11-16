@@ -130,3 +130,19 @@ def test_prompt_arms_and_query_api():
     with pytest.raises(ValueError):
         _session(api, "same")
     assert "Query API" not in _session(api, "told", query_api=False).intro
+
+
+def test_related_limits_match_the_note():
+    from consensus.theory import related_limits
+
+    for c in (1.0, 0.5, 0.0, -0.5):
+        env = build_env({**BASE, "task": "related", "target_align": c}, np.random.default_rng(3))
+        L = related_limits(env.w_A, env.w_B, env.v_B, 0.5)
+        ref = dict(solo=1.25, average=1.75 - c, convex=1.25 - c**2 / 2, stack=1.25 - c**2,
+                   partner=3.25 - 2 * c, w_convex=c / 2, beta=c)
+        for k, v in ref.items():
+            assert np.isclose(L[k], v), (c, k)
+        # And by simulation, for the average.
+        xA, xB, yA, _ = env.sample_pair(100_000, np.random.default_rng(4))
+        avg = (xA @ env.w_A + xB @ env.v_B) / 2
+        assert np.isclose(np.mean((yA - avg) ** 2), L["average"], atol=0.03)

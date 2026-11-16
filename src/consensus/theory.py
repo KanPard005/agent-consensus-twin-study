@@ -239,3 +239,36 @@ def asymmetric_limits(lam: float, alpha: float, sigma: float = 0.0) -> dict[str,
         convex_strong=alpha * B / signal,
         convex_weak=A / signal,
     )
+
+
+def related_limits(own: np.ndarray, cross: np.ndarray, partner: np.ndarray,
+                   sigma: float) -> dict[str, float]:
+    """Population references for one twin with related targets (LogBook 2026-11-16), for
+    independent standard-normal features (Sigma = I, lambda_xz = 0).
+
+    The twin's target is <x^own, own> + <x^other, cross> + eps; its opening is <x^own, own> and
+    its partner's opening is <x^other, partner> (the partner's target weights on its own block;
+    with independent blocks the partner cannot predict anything from x^own). Returns the MSE of:
+    the own opening alone ("solo"), the average of the openings ("average"), the best convex
+    blend ("convex", with its weight "w_convex"), the best stacking own + beta * partner
+    ("stack", with "beta"), the partner's opening alone ("partner"), and full information
+    ("joint" = sigma^2).
+
+    With |own| = |cross| = |partner| = 1 and cos(cross, partner) = c these are 1 + s2,
+    1.5 - c + s2, 1 - c^2/2 + s2, 1 - c^2 + s2 and 3 - 2c + s2 (s2 = sigma^2), with
+    w_convex = c/2 and beta = c.
+    """
+    s2 = sigma**2
+    uu, rr, pp, rp = own @ own, cross @ cross, partner @ partner, cross @ partner
+    beta = rp / pp
+    w = rp / (uu + pp)
+    return {
+        "solo": rr + s2,
+        "average": uu / 4 + rr - rp + pp / 4 + s2,
+        "convex": (w**2) * uu + rr - 2 * w * rp + w**2 * pp + s2,
+        "w_convex": w,
+        "stack": rr - rp**2 / pp + s2,
+        "beta": beta,
+        "partner": uu + rr - 2 * rp + pp + s2,
+        "joint": s2,
+    }
