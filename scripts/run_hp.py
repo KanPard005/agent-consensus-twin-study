@@ -89,6 +89,7 @@ def main(argv: list[str] | None = None) -> Path:
     results: dict[str, dict[str, np.ndarray]] = {}
     kinds = np.empty((n_runs, T), dtype=object)
     transcripts, costs = {}, {lab: [] for lab in labels}
+    conversations = {}  # {(label, run, twin): turns} for persistent twins
     for i in range(n_runs):
         r = first_run + i
         cases = gen.sample_set(run_rng(cfg["seed"], r), n_hidden, n_control)
@@ -102,6 +103,8 @@ def main(argv: list[str] | None = None) -> Path:
                     arr
                 )
             transcripts[(pc["label"], r)] = proto.transcript
+            for name, turns in getattr(proto, "conversations", {}).items():
+                conversations[(pc["label"], r, name)] = turns
             costs[pc["label"]].append(proto.cost)
         log.info("run %d/%d done (replicate %d)", i + 1, n_runs, r)
 
@@ -114,6 +117,8 @@ def main(argv: list[str] | None = None) -> Path:
     (run_dir / "kinds.json").write_text(json.dumps(kinds.tolist()))
     for (lab, r), rows in transcripts.items():
         save_jsonl(run_dir / "transcripts" / f"{lab}_run{r}.jsonl", rows)
+    for (lab, r, name), turns in conversations.items():
+        save_jsonl(run_dir / "transcripts" / f"{lab}_run{r}_conversation_{name}.jsonl", turns)
     log.info("saved to %s", run_dir)
     for lab, s in summary.items():
         log.info(

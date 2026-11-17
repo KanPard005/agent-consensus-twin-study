@@ -1,0 +1,56 @@
+# Alignment sweep (LogBook note 2026-11-16, "Alignment sweep: twins predicting related targets"):
+# each twin predicts its own target; B's target weights have cosine `target_align` = c with A's on
+# each feature block, noise shared, so c = 1 is the base lambda = 0, alpha = 1 task. Individual
+# scoring against the twin's own y; each twin sees only its own y after a query (and not the
+# partner's error). Prompt arms: agent.partner_target untold | told. The query API is listed at
+# start_queries (agent.query_api). No stated confidence.
+# Launch: scripts/launch_related.py --cs 1.0 0.5 0.0 -0.5 --arms untold told --pairs 8
+experiment: llm_haiku_sessions_related
+seed: 0
+n_runs: 1
+T: 60
+
+env:
+  task: related
+  target_align: 1.0
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  alpha: 1.0
+  weak: B
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 400
+  study_all: true
+  team_rule: individual
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40
+  structure_hint: false
+  partner_info: true
+  same_y: true                # unused by the clear prompt styles
+  model_tools: true
+  models_in_training: true
+  prompt_style: clear_history
+  history_tools: true
+  partner_target: untold      # untold | told
+  query_api: true
+  talk_free: false            # true: "talk as much as you want ... no need to worry about the cost"
+  max_budget_usd: 3.0
+  max_continues: 10
+  page_size: 25

@@ -11,3 +11,5 @@ Requires-Dist: pytest>=7; extra == "dev"
 Requires-Dist: ruff>=0.4; extra == "dev"
 Provides-Extra: llm
 Requires-Dist: anthropic>=2.6; extra == "llm"
+Provides-Extra: agents
+Requires-Dist: claude-agent-sdk>=0.2.182; extra == "agents"

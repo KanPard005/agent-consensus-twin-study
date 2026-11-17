@@ -1,0 +1,40 @@
+# Twins as live agent sessions (consensus.sessions, LogBook 2026-11-13): one Claude Agent SDK
+# session per twin for the whole run (no resume), acting only through the tools of a data API.
+# Training: get_training_data (budget 200, the same samples as O1h) and regress; the partner is
+# introduced only when the twin calls start_queries. Queries: next_query (both), submit_opening,
+# free messages, submit_prediction; a prediction counts only when both submit within `tol`
+# (3 attempts, then penalty 10). Overlap + structure-hint task of configs/llm_haiku_overlap.yaml.
+# Compaction is Claude Code's own (near its context limit); PreCompact events are logged.
+experiment: llm_haiku_sessions
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  cov: overlap
+  d_A: 3
+  d_B: 3
+  overlap: 1
+  w: [0.7, -0.5, 0.8, 0.6, -0.6]
+  rho: 0.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [x1, x2, x3], B: [x3, x4, x5]}
+  budget: 200
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 25                  # tool calls per query
+  structure_hint: true
+  partner_info: true
+  max_budget_usd: 6.0      # per twin (the SDK stops the session beyond it)
+  max_continues: 10        # "continue" messages if a twin ends its turn before the run is over

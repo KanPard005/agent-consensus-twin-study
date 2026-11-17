@@ -1,0 +1,54 @@
+# Independent features with a shared one (LogBook 2026-11-12, Kanad's question): do self-learning
+# twins incorporate the partner's estimate when they are told the structure?
+#   features z_1..z_5 iid N(0, 1), y = <z, w> + eps; A sees x1, x2, x3 and B sees x3, x4, x5
+#   (x3 is the same variable for both, and has the same name).
+# Every arm: S1n-style self-learning twins (200 cases each, then 30 talking steps, averaging rule),
+# told they are twins, told the partner's feature names and that "your partner may have
+# information that you do not" (`partner_info`).
+#   O1h : + `structure_hint` (all features independent; y linear in seen and unseen features)
+#   O1n : without the structure hint (control)
+# Normative reference: E[y | both] = yhat_A + yhat_B - 0.8 x3 (excess 0); averaging the solos
+# leaves 0.365 excess, adding them 0.64 (x3 counted twice), solo 0.72-0.74.
+# No-overlap control with the same per-twin problems: configs/llm_haiku_overlap0.yaml.
+experiment: llm_haiku_overlap
+seed: 0
+n_runs: 4
+summary_tail: 1.0
+plot_window: 5
+
+env:
+  cov: overlap
+  d_A: 3
+  d_B: 3
+  overlap: 1
+  w: [0.7, -0.5, 0.8, 0.6, -0.6]
+  rho: 0.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+post:
+  T: 30
+
+protocols:
+  - {name: no_talk, label: P0}
+  - &self
+    name: llm_exchange
+    label: O1h
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    labels: {A: [x1, x2, x3], B: [x3, x4, x5]}
+    partner_info: true
+    structure_hint: true
+  - {<<: *self, label: O1n, structure_hint: false}

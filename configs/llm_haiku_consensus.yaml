@@ -1,0 +1,70 @@
+# Consensus game (LogBook note 2026-11-11, "Entrenchment"): self-learning twins (S1n setup:
+# 200 training cases in batches of 25, distinct feature names, told they are twins) must agree.
+# Each step they talk for at most 4 rounds and stop as soon as their estimates are within 0.1;
+# the team's prediction is the agreed value, and no agreement after round 4 costs a fixed
+# penalty of 10 instead (a typical squared error is about 1; Var(y) is about 2.25 at rho = 0).
+#   C4  : the consensus game
+#   S1n : the averaging rule (1 exchange, team = average of the final estimates), the baseline;
+#         at rho = 0 and 0.5 it already exists on the same seed and streams in
+#         results/llm_haiku_mediated_rho*, so run it here only for new rho values
+#   C   : linear twins (learned heads, 3 exchanges) scored by the same game
+# Hypothesis (note): the share of steps that reach a (good) consensus falls as the twins'
+# information becomes more disparate (rho -> 0). Ideal Bayesian twins agree exactly after one
+# exchange at rho = 0, and at full information (theory.agreement_path).
+# One process per (rho, replicate):
+#   --set env.rho=<rho> first_run=<r> n_runs=1 experiment=llm_haiku_consensus_rho<rho>
+experiment: llm_haiku_consensus
+seed: 0
+n_runs: 3
+summary_tail: 0.5
+plot_window: 10
+
+env:
+  d_A: 3
+  d_B: 3
+  rho: 0.0
+  norm_A: 1.0
+  norm_B: 1.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+post:
+  T: 60
+
+protocols:
+  - {name: no_talk, label: P0}
+  - {name: blend, label: P1, prior_var: 1.0}
+  - {name: exchange, label: P2, n_exchanges: 1, prior_scale: 1.0, msg_prior_var: 1.0}
+  - {name: consensus, label: C, n_exchanges: 3, tol: 0.1, penalty: 10.0}
+  - &self
+    name: llm_consensus
+    label: C4
+    n_exchanges: 3
+    tol: 0.1
+    penalty: 10.0
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct
+  - name: llm_exchange
+    label: S1n
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    feature_names: distinct

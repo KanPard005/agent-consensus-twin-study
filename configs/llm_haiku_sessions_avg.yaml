@@ -1,0 +1,46 @@
+# Entrenchment with live-session twins WITHOUT a consensus rule (LogBook 2026-11-13): the twins
+# talk freely, then each submits its own final estimate; the team prediction is their average.
+# Same cells, data and pairing as configs/llm_haiku_sessions_entrench.yaml (the consensus version).
+# Controlled-lambda design (as configs/llm_haiku_sessions_lambda.yaml). Every cell draws from the
+# same 1600 training cases per twin and the same queries (paired by pair index); a twin studies
+# the first n of them and must study all n before the queries (`study_all`).
+#   equal pairs  : both twins n in {25, 100, 400, 1600}       (agent.budget=n)
+#   mixed pairs  : one twin n in {100, 400, 1600}, partner 25 (agent.budget_long / budget_short),
+#                  the long-trained twin alternating A, B by pair index
+# Twins are not told how much their partner studied. Launch with scripts/launch_grid.py.
+experiment: llm_haiku_sessions_avg
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 25
+  study_all: true
+  team_rule: average        # each twin submits its own final; team = their average
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 25
+  structure_hint: false
+  partner_info: true
+  max_budget_usd: 3.0
+  max_continues: 10

@@ -1,0 +1,41 @@
+# Hidden-profile café task with persistent twins that think privately (LogBook 2026-11-10).
+# H1 = the notes-mode twins of configs/hp_haiku.yaml (fresh call per round, private notes).
+# H2 = one continuing conversation per twin for the whole run (`memory: persistent`) plus a
+# private `thinking` field the partner never sees (`private_thinking: true`); the public
+# channel (message + probabilities) is unchanged. F1 = one Haiku with every clue.
+# Same seed and case generator as hp_haiku.yaml, so H1 / H2 / F1 see the same cases.
+# Run once per p_shared with --set cases.p_shared=<p> experiment=hp_haiku_persistent_p<p>
+experiment: hp_haiku_persistent
+seed: 0
+n_runs: 3
+
+cases:
+  n_sites: 3
+  clues_per_site: 6
+  p_shared: 0.5
+  min_margin: 2.0
+  n_hidden: 15
+  n_control: 5
+
+protocols:
+  - name: hp_talk
+    label: H1
+    n_exchanges: 2
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    max_chars: 600
+    notes_chars: 800
+    history_len: 10
+    tell_split: true
+    tell_twin: true
+  - name: hp_talk
+    label: H2
+    n_exchanges: 2
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    max_chars: 600
+    tell_split: true
+    tell_twin: true
+    memory: persistent
+    private_thinking: true
+  - name: solo_full
+    label: F1
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}

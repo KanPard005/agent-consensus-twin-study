@@ -1,0 +1,47 @@
+# No training phase (LogBook 2026-11-14): the twins start without any labelled cases and learn
+# only from the shared queries (y revealed after each), talking from query 1 (`no_training`).
+# Otherwise as configs/llm_haiku_sessions_asym_own.yaml (asymmetric weights: env.alpha, weak twin
+# alternating by pair), with T = 60 queries and model instances from the query phase on.
+# Launch: launch_grid.py --config <this> --prefix <experiment> --no-mixed --ns 0
+#         --lambdas 0.0 0.5 --alphas 0.0 0.5 1.0
+experiment: llm_haiku_sessions_untrained_own
+seed: 0
+n_runs: 1
+T: 60
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  alpha: 1.0
+  weak: B
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 0
+  study_all: false
+  no_training: true
+  team_rule: individual     # each twin scored on its own final (no team average)
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40                   # tool calls per query (the model tools need more)
+  structure_hint: false
+  partner_info: true
+  same_y: true
+  model_tools: true
+  max_budget_usd: 3.0
+  max_continues: 10

@@ -1,0 +1,57 @@
+# Context compaction and entrenchment (LogBook 2026-11-13). Overlap + structure-hint task of
+# configs/llm_haiku_overlap.yaml (A sees x1..x3, B sees x3..x5; best response
+# final = own + partner - 0.8 x3), with persistent self-learning twins that talk freely
+# (`llm_free_talk`: up to 3 rounds per step, messages up to 2000 characters, the step ends when
+# both say they are done) and have a regression tool over the run's past steps (run
+# automatically every round: on own features in round 1, on own_open and partner_open after).
+# Each twin's conversation is compacted into its own summary (<= 4000 characters, ~1k tokens)
+# after any step that leaves it above `compact_tokens` (estimated as characters / 4):
+#   C4k, C8k, C16k : compact at 4k / 8k / 16k tokens
+#   Cinf           : never compacted (the full persistent arm)
+# Same seed, training samples and streams as O1h, so all arms are paired with it run by run.
+# Run arms and replicates in separate processes:
+#   --set "only=[C8k]" experiment=llm_haiku_compact_C8k first_run=0 n_runs=4
+experiment: llm_haiku_compact
+seed: 0
+n_runs: 8
+summary_tail: 1.0
+plot_window: 5
+
+env:
+  cov: overlap
+  d_A: 3
+  d_B: 3
+  overlap: 1
+  w: [0.7, -0.5, 0.8, 0.6, -0.6]
+  rho: 0.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+post:
+  T: 30
+
+protocols:
+  - {name: no_talk, label: P0}
+  - &free
+    name: llm_free_talk
+    label: C4k
+    max_rounds: 3
+    compact_tokens: 4000
+    summary_chars: 4000
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    train_batch: 25
+    notes_chars: 1200
+    max_chars: 2000
+    max_tool_calls: 2
+    tell_twin: true
+    labels: {A: [x1, x2, x3], B: [x3, x4, x5]}
+    partner_info: true
+    structure_hint: true
+  - {<<: *free, label: C8k, compact_tokens: 8000}
+  - {<<: *free, label: C16k, compact_tokens: 16000}
+  - {<<: *free, label: Cinf, compact_tokens: null}

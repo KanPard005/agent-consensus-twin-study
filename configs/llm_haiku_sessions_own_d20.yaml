@@ -1,0 +1,50 @@
+# d = 20 version of configs/llm_haiku_sessions_own.yaml (LogBook 2026-11-13): equal pairs only, lambda in {0, 0.5},
+# both twins study n in {50, 200, 800, 1600} (25 cannot identify 21 coefficients). Same
+# seed, so every cell draws from the same 1600 training cases per twin and the same queries.
+# Entrenchment with live-session twins, each SCORED ON ITS OWN FINAL (LogBook 2026-11-13): the
+# twins talk freely, then each submits its own final and is scored by its own squared error; there
+# is no team prediction to leave the combining to. Same cells, data and pairing as the consensus
+# (llm_haiku_sessions_entrench.yaml) and averaging (llm_haiku_sessions_avg.yaml) grids.
+# Controlled-lambda design (as configs/llm_haiku_sessions_lambda.yaml). Every cell draws from the
+# same 1600 training cases per twin and the same queries (paired by pair index); a twin studies
+# the first n of them and must study all n before the queries (`study_all`).
+#   equal pairs  : both twins n in {25, 100, 400, 1600}       (agent.budget=n)
+#   mixed pairs  : one twin n in {100, 400, 1600}, partner 25 (agent.budget_long / budget_short),
+#                  the long-trained twin alternating A, B by pair index
+# Twins are not told how much their partner studied. Launch with scripts/launch_grid.py.
+experiment: llm_haiku_sessions_own_d20
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  d_A: 20
+  d_B: 20
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20], B: [b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16, b17, b18, b19, b20]}
+  budget: 50
+  study_all: true
+  team_rule: individual     # each twin scored on its own final (no team average)
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 25
+  structure_hint: false
+  partner_info: true
+  max_budget_usd: 6.0
+  max_continues: 10

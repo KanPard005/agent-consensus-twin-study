@@ -1,0 +1,39 @@
+# Twins as live agent sessions (consensus.sessions) in the controlled-lambda design (same seed as
+# configs/llm_haiku_lambda.yaml, so the same U, V, training cases and queries). Distinct feature
+# names, no structure hint (features are correlated when lambda > 0). E25 / E400 = training budget.
+# One cell and replicate per process, e.g.:
+#   --set env.lambda_xz=0.9 agent.budget=25 first_run=0 experiment=llm_haiku_sessions_lam0.9_E25
+experiment: llm_haiku_sessions_lambda
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 400
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 25                  # tool calls per query
+  structure_hint: false
+  partner_info: true
+  max_budget_usd: 6.0      # per twin (the SDK stops the session beyond it)
+  max_continues: 10        # "continue" messages if a twin ends its turn before the run is over

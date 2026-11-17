@@ -159,3 +159,116 @@ def protocol_benchmarks(
         out[f"shift_A_exchange_{e}"] = float(path.shift_A[e])
         out[f"shift_B_exchange_{e}"] = float(path.shift_B[e])
     return out
+
+
+def agreement_probability(path: AgreementPath, tol: float) -> np.ndarray:
+    """P(|m^A_e - m^B_e| < tol) for each round e of the population dialogue, shape (E + 1,).
+
+    The gap m^A_e - m^B_e = <v_A^e - v_B^e, x> is linear in Gaussian x, so it is N(0, D_e) with
+    D_e = `path.disagreement[e]`, and P(|gap| < tol) = erf(tol / sqrt(2 D_e)) (= 1 when D_e = 0,
+    i.e. the twins announce the same function of x). This is the share of cases on which ideal
+    (Bayesian, known-model) twins have reached a consensus within tolerance by round e.
+    """
+    from math import erf, sqrt
+
+    return np.array([1.0 if D < 1e-14 else erf(tol / sqrt(2.0 * D)) for D in path.disagreement])
+
+
+def rounds_to_agree(path: AgreementPath, eps: float = 1e-10) -> float:
+    """First round e at which the population dialogue agrees exactly (D_e < eps); nan if never
+    within the path. Geanakoplos-Polemarchakis: finite for Gaussian x, since each round either
+    agrees or adds a new linear message to someone's information."""
+    hit = np.flatnonzero(path.disagreement < eps)
+    return float(hit[0]) if hit.size else float("nan")
+
+
+def optimal_head(
+    Sigma: np.ndarray, w: np.ndarray, d_A: int, theta_partner: np.ndarray, agent: str = "A"
+) -> np.ndarray:
+    """Population-optimal coefficients of a twin's one-message head, given the partner's opinion.
+
+    The head regresses y on z = (own x, m) with m = <x^partner, theta_partner> the partner's
+    (fixed) solo prediction. With z = M x the optimal coefficients are (M Sigma M^T)^{-1} M Sigma w.
+
+    Returns
+    -------
+    coef : ndarray, shape (d_own + 1,)
+        Weights on own features, then the weight on the partner's message (last entry).
+    """
+    d_B = len(w) - d_A
+    E_own = selector(d_A, d_B, agent)
+    m_row = np.zeros(d_A + d_B)
+    if agent == "A":
+        m_row[d_A:] = theta_partner
+    else:
+        m_row[:d_A] = theta_partner
+    M = np.vstack([E_own, m_row])
+    return np.linalg.pinv(M @ Sigma @ M.T, hermitian=True) @ (M @ Sigma @ w)
+
+
+def asymmetric_limits(lam: float, alpha: float, sigma: float = 0.0) -> dict[str, float]:
+    """Closed-form population limits of the asymmetric controlled design (LogBook 2026-11-14).
+
+    Sigma_XZ = lam U V^T, s_strong = 1_d / sqrt(d), s_weak = alpha 1_d / sqrt(d) (align = 1, raw
+    weights). With A = 1 + lam alpha and B = alpha + lam (the strong and weak solo predictors'
+    coefficients along s):
+
+    - signal variance 1 + alpha^2 + 2 lam alpha;
+    - solo excess MSE: strong alpha^2 (1 - lam^2), weak (1 - lam^2), so their ratio is alpha^2;
+    - disagreement E[(yhat_s - yhat_w)^2] = (1 - lam^2)(1 + alpha^2 + 2 lam alpha);
+    - optimal blend y* = yhat_s / A + alpha yhat_w / B (zero excess: it recovers the full
+      predictor); at lam = 0 it is the sum for every alpha.
+
+    `convex_*` is the best weight on the partner for a twin restricted to convex combinations
+    (1 - w) own + w partner of the two openings, w = Cov(y - own, partner - own) / Var(partner - own):
+    strong alpha (alpha + lam) / signal, weak (1 + lam alpha) / signal (they add up to 1). It is
+    the reference for the weight of advice; the optimal unrestricted blend is the `beta_*` pair.
+    """
+    A, B = 1.0 + lam * alpha, alpha + lam
+    b_s = 1.0 / A
+    b_w = alpha / B if B != 0 else 0.0
+    signal = 1.0 + alpha**2 + 2.0 * lam * alpha
+    return dict(
+        signal=signal,
+        mse_full=sigma**2,
+        excess_strong=alpha**2 * (1.0 - lam**2),
+        excess_weak=1.0 - lam**2,
+        disagreement=(1.0 - lam**2) * signal,
+        beta_strong=b_s,
+        beta_weak=b_w,
+        convex_strong=alpha * B / signal,
+        convex_weak=A / signal,
+    )
+
+
+def related_limits(own: np.ndarray, cross: np.ndarray, partner: np.ndarray,
+                   sigma: float) -> dict[str, float]:
+    """Population references for one twin with related targets (LogBook 2026-11-16), for
+    independent standard-normal features (Sigma = I, lambda_xz = 0).
+
+    The twin's target is <x^own, own> + <x^other, cross> + eps; its opening is <x^own, own> and
+    its partner's opening is <x^other, partner> (the partner's target weights on its own block;
+    with independent blocks the partner cannot predict anything from x^own). Returns the MSE of:
+    the own opening alone ("solo"), the average of the openings ("average"), the best convex
+    blend ("convex", with its weight "w_convex"), the best stacking own + beta * partner
+    ("stack", with "beta"), the partner's opening alone ("partner"), and full information
+    ("joint" = sigma^2).
+
+    With |own| = |cross| = |partner| = 1 and cos(cross, partner) = c these are 1 + s2,
+    1.5 - c + s2, 1 - c^2/2 + s2, 1 - c^2 + s2 and 3 - 2c + s2 (s2 = sigma^2), with
+    w_convex = c/2 and beta = c.
+    """
+    s2 = sigma**2
+    uu, rr, pp, rp = own @ own, cross @ cross, partner @ partner, cross @ partner
+    beta = rp / pp
+    w = rp / (uu + pp)
+    return {
+        "solo": rr + s2,
+        "average": uu / 4 + rr - rp + pp / 4 + s2,
+        "convex": (w**2) * uu + rr - 2 * w * rp + w**2 * pp + s2,
+        "w_convex": w,
+        "stack": rr - rp**2 / pp + s2,
+        "beta": beta,
+        "partner": uu + rr - 2 * rp + pp + s2,
+        "joint": s2,
+    }

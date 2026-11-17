@@ -311,8 +311,12 @@ class LLMExchange(Protocol):
         self_n_B: int | None = None,
         self_offset_A: int = 0,
         self_offset_B: int = 0,
+        labels: dict[str, list[str]] | None = None,
         **twin_kw,
     ) -> None:
+        # Explicit feature names per twin ({A: [...], B: [...]}, `cov: overlap`); shared variables
+        # have the same name. Each twin is also told its partner's names.
+        self.labels = labels
         if (self_n_A or self_n_B or self_offset_A or self_offset_B) and twin_kw.get(
             "learner", "linear"
         ) != "self":
@@ -330,6 +334,7 @@ class LLMExchange(Protocol):
         for agent in (A, B):
             agent.begin_communication(0, frozen=True)
         backend = build_backend(self.backend_cfg)
+        self.backend = backend  # kept for subclasses that add agents (`consensus.mediator`)
         n_train = {}
         for name, lin in (("A", A), ("B", B)):
             n_all = lin.heads[0].n
@@ -341,9 +346,17 @@ class LLMExchange(Protocol):
                     "training samples"
                 )
             n_train[name] = n
+        self.n_train = n_train  # cases each twin studies (learner: self) / its learner's n
+        label_kw = {"A": {}, "B": {}}
+        if self.labels:
+            for name, other in (("A", "B"), ("B", "A")):
+                label_kw[name] = dict(
+                    feature_labels=self.labels[name], partner_labels=self.labels[other]
+                )
         self.twins = {
             name: self.twin_cls(
-                name, lin, backend, self.E + 1, self.T, n_train[name], **self.twin_kw
+                name, lin, backend, self.E + 1, self.T, n_train[name], **self.twin_kw,
+                **label_kw[name],
             )
             for name, lin in (("A", A), ("B", B))
         }
@@ -413,6 +426,7 @@ class LLMExchange(Protocol):
             {
                 "t": self.t,
                 "y": y,
+                "x": {"A": [float(v) for v in x_A], "B": [float(v) for v in x_B]},
                 "model_pred": {"A": solo_A, "B": solo_B},
                 **(
                     {"linear_ref": {"A": tA.model_prediction(x_A), "B": tB.model_prediction(x_B)}}
@@ -567,6 +581,18 @@ def build_protocol(cfg: dict) -> Protocol:
         "llm_exchange": LLMExchange,
         "llm_switch": SwitchExchange,
     }
+    if name == "llm_mediated":  # imported here: consensus.mediator imports this module
+        from consensus.mediator import MediatedExchange
+
+        registry[name] = MediatedExchange
+    if name in ("consensus", "llm_consensus"):  # consensus.consensus_game imports this module
+        from consensus.consensus_game import ConsensusExchange, LLMConsensus
+
+        registry.update(consensus=ConsensusExchange, llm_consensus=LLMConsensus)
+    if name == "llm_free_talk":  # imported here: consensus.free_talk imports this module
+        from consensus.free_talk import FreeTalkExchange
+
+        registry[name] = FreeTalkExchange
     if name == "llm_worded":  # imported here: consensus.worded imports this module
         from consensus.worded import WordedExchange
 

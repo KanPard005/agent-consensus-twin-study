@@ -1,0 +1,40 @@
+# Agentic twins (LogBook 2026-11-13): each twin drives a shared data-generator API by taking
+# actions (consensus.agentic). Overlap + structure-hint task of configs/llm_haiku_overlap.yaml
+# (A sees x1..x3, B sees x3..x5; best response final = own + partner - 0.8 x3). Each twin pulls
+# its own training cases (budget 200, from the same samples as O1h) and fits them with its
+# regression tool, then the query phase: next_query (both must ask), submit_opening, free
+# messages, submit_final (y revealed when both are in). Team = average of the two finals.
+# Compaction at 8k estimated tokens (~18k real), as the middle arm of llm_haiku_compact.yaml.
+# Pilot: 4 pairs, replicates 0-3 (paired with O1h and the compaction runs).
+experiment: llm_haiku_agentic
+seed: 0
+n_runs: 4
+T: 30
+
+env:
+  cov: overlap
+  d_A: 3
+  d_B: 3
+  overlap: 1
+  w: [0.7, -0.5, 0.8, 0.6, -0.6]
+  rho: 0.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+agent:
+  backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+  labels: {A: [x1, x2, x3], B: [x3, x4, x5]}
+  budget: 200
+  max_actions: 12
+  max_train_actions: 30
+  max_chars: 2000
+  compact_tokens: 8000
+  summary_chars: 4000
+  structure_hint: true
+  partner_info: true
+  tell_twin: true
+  max_cost_usd: 3.5      # per twin per run (a normal run is ~$2.7 per twin): a runaway loop stops here

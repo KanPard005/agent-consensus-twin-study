@@ -1,0 +1,45 @@
+# Individual scoring + "same y" sentence + fresh model instances (LogBook 2026-11-13). As
+# configs/llm_haiku_sessions_own.yaml (each twin scored on its own final; same cells, data and
+# pairing), plus: the twins are told "You and your partner predict the same quantity y for each
+# case" (`same_y`), and can start fresh least-squares model instances at any time with any columns
+# (`model_tools`: new_model / add_case / fit_model; their own features and both openings are
+# filled in automatically, any other column they supply). Nothing says how to use the partner.
+# Equal pairs, lambda in {0, 0.5}: launch_grid.py --no-mixed --lambdas 0.0 0.5.
+experiment: llm_haiku_sessions_samey
+seed: 0
+n_runs: 1
+T: 30
+
+env:
+  d_A: 3
+  d_B: 3
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  sigma: 0.5
+
+train:
+  n_A: 1600
+  n_B: 1600
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  budget: 25
+  study_all: true
+  team_rule: individual     # each twin scored on its own final (no team average)
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40                   # tool calls per query (the model tools need more)
+  structure_hint: false
+  partner_info: true
+  same_y: true
+  model_tools: true
+  max_budget_usd: 3.0
+  max_continues: 10

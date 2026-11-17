@@ -1,0 +1,46 @@
+# No-overlap control for configs/llm_haiku_overlap.yaml: z_1..z_6 iid, A sees x1..x3, B sees
+# x4..x6, with the same per-twin weights (B's x4 has the weight of the shared x3 in the overlap
+# design), so each twin's solo problem is the same as there. E[y | both] = yhat_A + yhat_B.
+# Excess: averaging 0.685, adding 0, solo 1.36.
+experiment: llm_haiku_overlap0
+seed: 0
+n_runs: 4
+summary_tail: 1.0
+plot_window: 5
+
+env:
+  cov: overlap
+  d_A: 3
+  d_B: 3
+  overlap: 0
+  w: [0.7, -0.5, 0.8, 0.8, 0.6, -0.6]
+  rho: 0.0
+  sigma: 0.5
+
+train:
+  n_A: 200
+  n_B: 200
+  lam: 1.0
+
+post:
+  T: 30
+
+protocols:
+  - {name: no_talk, label: P0}
+  - &self
+    name: llm_exchange
+    label: O0h
+    n_exchanges: 1
+    tol: 0.01
+    backend: {kind: cli, model: claude-haiku-5-5, effort: low}
+    learner: self
+    train_batch: 25
+    history_len: 10
+    max_chars: 300
+    notes_chars: 1200
+    show_partner_estimates: true
+    tell_twin: true
+    labels: {A: [x1, x2, x3], B: [x4, x5, x6]}
+    partner_info: true
+    structure_hint: true
+  - {<<: *self, label: O0n, structure_hint: false}

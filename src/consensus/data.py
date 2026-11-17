@@ -40,6 +40,121 @@ def block_covariance(d_A: int, d_B: int, rho: float) -> np.ndarray:
     return Sigma
 
 
+def random_orthogonal(d: int, rng: np.random.Generator) -> np.ndarray:
+    """Haar-distributed d x d orthogonal matrix (QR of a Gaussian matrix, with the sign fix)."""
+    Q, R = np.linalg.qr(rng.standard_normal((d, d)))
+    return Q * np.sign(np.diag(R))
+
+
+def controlled_env_parts(
+    d: int,
+    lambda_xz: float,
+    rng: np.random.Generator,
+    rotate: bool = True,
+    align: float = 1.0,
+    normalize: bool = False,
+    alpha: float = 1.0,
+    weak: str = "B",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Covariance and weights of the controlled design (LogBook note 2026-11-11, "More controlled
+    experiment on differences").
+
+    Sigma = [[I, lambda U V^T], [lambda V U^T, I]], so the cross-covariance has SVD U (lambda I) V^T,
+    and the weights are w_A = U s_A, w_B = V s_B with s_A = 1_d / sqrt(d), s_B = align * s_A.
+    The population solo opinions then disagree by
+
+        E[(yhat_A - yhat_B)^2] = 2 (1 - lambda^2)(1 + align * lambda),
+
+    which peaks at lambda = 1/3 for align = 1. The signal variance is 2 (1 + align * lambda);
+    `normalize` divides the weights by its square root so that it is 1 for every lambda, and the
+    disagreement becomes 1 - lambda^2.
+
+    Parameters
+    ----------
+    d : int
+        Dimension of each block (d_A = d_B = d).
+    lambda_xz : float
+        The common singular value of the cross-covariance, in (-1, 1).
+    rng : numpy Generator
+        Draws U and V (only when `rotate`).
+    rotate : bool
+        Random orthogonal U, V; otherwise U = V = I (the paired covariance with rho = lambda).
+    align : float
+        c = s_A' s_B, +1 (aligned) or -1 (opposed).
+    normalize : bool
+        Scale the weights so that Var(<x, w>) = 1.
+    alpha : float
+        Asymmetric information (LogBook 2026-11-14): the `weak` twin's weights are multiplied by
+        alpha, so s_strong = 1_d / sqrt(d) and s_weak = alpha * align * 1_d / sqrt(d). With
+        align = 1 the population solo excess errors are alpha^2 (1 - lambda^2) for the strong twin
+        and (1 - lambda^2) for the weak one (see `consensus.theory.asymmetric_limits`); alpha = 0
+        with lambda > 0 nests the weak twin's information inside the strong one's.
+    weak : "A" or "B"
+        Which twin gets the scaled weights (alternated across pairs to balance label effects).
+
+    Returns
+    -------
+    Sigma : ndarray, shape (2d, 2d)
+    w_A, w_B : ndarray, shape (d,)
+    """
+    if not -1.0 < lambda_xz < 1.0:
+        raise ValueError(f"lambda_xz must be in (-1, 1), got {lambda_xz}")
+    U = random_orthogonal(d, rng) if rotate else np.eye(d)
+    V = random_orthogonal(d, rng) if rotate else np.eye(d)
+    C = lambda_xz * U @ V.T
+    Sigma = np.block([[np.eye(d), C], [C.T, np.eye(d)]])
+    if weak not in ("A", "B"):
+        raise ValueError(f"weak must be 'A' or 'B', got {weak!r}")
+    s = np.ones(d) / np.sqrt(d)
+    # Coefficients of the two weight vectors along s (in the U and V bases).
+    c_A = alpha if weak == "A" else 1.0
+    c_B = align * (alpha if weak == "B" else 1.0)
+    # Signal variance ||s_A||^2 + ||s_B||^2 + 2 lambda s_A's_B; equals 2 (1 + align lambda) at alpha = 1.
+    var = c_A**2 + c_B**2 + 2.0 * lambda_xz * c_A * c_B
+    scale = 1.0 / np.sqrt(var) if normalize else 1.0
+    return Sigma, scale * c_A * U @ s, scale * c_B * V @ s
+
+
+def overlap_env_parts(
+    d_A: int, d_B: int, k: int, w: list[float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Covariance and weights when the twins share k of D = d_A + d_B - k independent features.
+
+    The features z_1..z_D are iid N(0, 1) and y = <z, w> + eps. A sees z_1..z_{d_A}, B sees
+    z_{d_A-k+1}..z_D, so the last k of A's features are the first k of B's (the same variables, and
+    in the prompts the same names). In the twin model's (x^A, x^B) coordinates the shared weights
+    are put on A's block and B's copies get weight 0; the pair (x^A_{d_A-k+j}, x^B_j) has
+    correlation 1, so Sigma is singular (sampled with a square root, not Cholesky).
+
+    Parameters
+    ----------
+    d_A, d_B : int
+        Number of features each twin sees.
+    k : int
+        Number of shared features, 0 <= k <= min(d_A, d_B).
+    w : list of float, length D
+        True weights on z_1..z_D.
+
+    Returns
+    -------
+    Sigma : ndarray, shape (d_A + d_B, d_A + d_B)
+    w_A : ndarray, shape (d_A,)
+    w_B : ndarray, shape (d_B,)
+    """
+    if not 0 <= k <= min(d_A, d_B):
+        raise ValueError(f"overlap must be in [0, min(d_A, d_B)], got {k}")
+    D = d_A + d_B - k
+    w = np.asarray(w, float)
+    if w.shape != (D,):
+        raise ValueError(f"w must have d_A + d_B - overlap = {D} entries, got {w.shape}")
+    # Selection matrix S (d_A + d_B, D): x = S z.
+    S = np.zeros((d_A + d_B, D))
+    S[np.arange(d_A), np.arange(d_A)] = 1.0
+    S[d_A + np.arange(d_B), d_A - k + np.arange(d_B)] = 1.0
+    w_B = np.concatenate([np.zeros(k), w[d_A:]])
+    return S @ S.T, w[:d_A].copy(), w_B
+
+
 @dataclass
 class LinearTwinEnv:
     """Joint linear-Gaussian environment shared by the two agents.
@@ -66,8 +181,13 @@ class LinearTwinEnv:
         self.d_B = len(self.w_B)
         if self.Sigma.shape != (self.d_A + self.d_B,) * 2:
             raise ValueError("Sigma shape does not match d_A + d_B")
-        # Cholesky factor for sampling x = L z with z ~ N(0, I).
-        self._L = np.linalg.cholesky(self.Sigma)
+        # Factor for sampling x = L z with z ~ N(0, I): Cholesky, or a symmetric square root when
+        # Sigma is singular (`cov: overlap`, where a shared feature appears in both blocks).
+        try:
+            self._L = np.linalg.cholesky(self.Sigma)
+        except np.linalg.LinAlgError:
+            vals, vecs = np.linalg.eigh(self.Sigma)
+            self._L = vecs * np.sqrt(np.clip(vals, 0.0, None))
 
     @property
     def w(self) -> np.ndarray:
@@ -92,8 +212,31 @@ class LinearTwinEnv:
         """Build from the `env` config block; random weight directions are scaled to `norm_A`, `norm_B`.
 
         Explicit weights can be given as lists under `w_A` / `w_B` instead.
+
+        `cov: controlled` uses `controlled_env_parts` instead (keys `lambda_xz`, `rotate`, `align`,
+        `normalize`, `alpha`, `weak`; needs d_A = d_B; `rho`, `norm_*` and explicit weights are ignored).
+
+        `cov: overlap` uses `overlap_env_parts` (keys `overlap`, `w`): independent features, some
+        of them seen by both twins.
         """
         d_A, d_B = cfg["d_A"], cfg["d_B"]
+        if cfg.get("cov", "paired") == "overlap":
+            Sigma, w_A, w_B = overlap_env_parts(d_A, d_B, cfg["overlap"], cfg["w"])
+            return cls(w_A=w_A, w_B=w_B, Sigma=Sigma, sigma=cfg["sigma"])
+        if cfg.get("cov", "paired") == "controlled":
+            if d_A != d_B:
+                raise ValueError("cov: controlled needs d_A = d_B")
+            Sigma, w_A, w_B = controlled_env_parts(
+                d_A,
+                cfg["lambda_xz"],
+                rng,
+                rotate=cfg.get("rotate", True),
+                align=cfg.get("align", 1.0),
+                normalize=cfg.get("normalize", False),
+                alpha=cfg.get("alpha", 1.0),
+                weak=cfg.get("weak", "B"),
+            )
+            return cls(w_A=w_A, w_B=w_B, Sigma=Sigma, sigma=cfg["sigma"])
         w_A = (
             np.asarray(cfg["w_A"], float)
             if "w_A" in cfg
@@ -173,14 +316,72 @@ class ProductTwinEnv(LinearTwinEnv):
         return cls(lin.w_A, lin.w_B, lin.Sigma, lin.sigma, mu=cfg.get("mu", 1.0))
 
 
+def tilted_direction(v: np.ndarray, c: float, rng: np.random.Generator) -> np.ndarray:
+    """A vector with the norm of v and cosine c with it: c v + sqrt(1 - c^2) |v| u, where u is a
+    random unit vector orthogonal to v."""
+    if not -1.0 <= c <= 1.0:
+        raise ValueError(f"cosine must be in [-1, 1], got {c}")
+    u = rng.standard_normal(len(v))
+    nv = float(np.linalg.norm(v))
+    if nv > 0:
+        u -= (u @ v) / nv**2 * v  # remove the component along v
+    u /= np.linalg.norm(u)
+    return c * v + np.sqrt(1.0 - c**2) * nv * u
+
+
+@dataclass
+class RelatedTargetsEnv(LinearTwinEnv):
+    """Each twin predicts its own target (LogBook note 2026-11-16, "Alignment sweep: twins
+    predicting related targets"):
+
+        y_A = <x^A, w^A> + <x^B, w^B> + eps,      y_B = <x^A, v^A> + <x^B, v^B> + eps,
+
+    with cos(w^A, v^A) = cos(w^B, v^B) = c, |v^A| = |w^A|, |v^B| = |w^B| and the noise eps
+    shared, so c = 1 gives y_A = y_B (the base task). At Sigma = I twin A's best use of B's
+    opening <x^B, v^B> is the coefficient c, which removes a fraction c^2 of what B's raw
+    features would remove.
+
+    `sample` returns (x^A, x^B, y_A), so code that knows only one target sees A's;
+    `sample_pair` also returns y_B from the same draws.
+    """
+
+    v_A: np.ndarray = None  # B's target weights on A's features
+    v_B: np.ndarray = None  # B's target weights on B's features
+    target_align: float = 1.0
+
+    def sample_pair(self, n: int, rng: np.random.Generator):
+        """(x^A, x^B, y_A, y_B); the same random draws as `sample`."""
+        x = rng.standard_normal((n, self.d_A + self.d_B)) @ self._L.T
+        eps = self.sigma * rng.standard_normal(n)
+        x_A, x_B = x[:, : self.d_A], x[:, self.d_A :]
+        return x_A, x_B, x @ self.w + eps, x_A @ self.v_A + x_B @ self.v_B + eps
+
+    def sample(self, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x_A, x_B, y_A, _ = self.sample_pair(n, rng)
+        return x_A, x_B, y_A
+
+    @classmethod
+    def from_config(cls, cfg: dict, rng: np.random.Generator) -> "RelatedTargetsEnv":
+        """The base env from the same block (e.g. `cov: controlled`), then B's target weights
+        tilted by cosine `target_align` (drawn from rng after the base env)."""
+        lin = LinearTwinEnv.from_config(cfg, rng)
+        c = float(cfg["target_align"])
+        v_A, v_B = tilted_direction(lin.w_A, c, rng), tilted_direction(lin.w_B, c, rng)
+        return cls(lin.w_A, lin.w_B, lin.Sigma, lin.sigma, v_A=v_A, v_B=v_B, target_align=c)
+
+
 def build_env(cfg: dict, rng: np.random.Generator) -> LinearTwinEnv:
-    """Environment from the `env` config block; `task: logistic` gives binary labels and
-    `task: product` multiplies the two blocks' signals (`ProductTwinEnv`)."""
+    """Environment from the `env` config block; `task: logistic` gives binary labels,
+    `task: product` multiplies the two blocks' signals (`ProductTwinEnv`), and `task: related`
+    gives each twin its own target (`RelatedTargetsEnv`)."""
     task = cfg.get("task", "regression")
     if task == "regression":
         return LinearTwinEnv.from_config(cfg, rng)
+    if task == "related":
+        return RelatedTargetsEnv.from_config(cfg, rng)
     if task == "logistic":
         return LogisticTwinEnv.from_config(cfg, rng)
     if task == "product":
         return ProductTwinEnv.from_config(cfg, rng)
-    raise ValueError(f"unknown task {task!r}; choose 'regression', 'logistic' or 'product'")
+    raise ValueError(
+        f"unknown task {task!r}; choose 'regression', 'logistic', 'product' or 'related'")

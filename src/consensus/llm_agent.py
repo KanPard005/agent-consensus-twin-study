@@ -21,6 +21,9 @@ Options (all off by default, which reproduces the first LLM experiment's prompts
   batches and writes, in its notes, the model or rules it will predict with (`LLMTwin.train`).
   In the communication phase it predicts from its features and those notes alone; its solo
   opinion is its round-1 estimate.
+- `team_rule="mediator"` (`consensus.mediator`): the twins only predict. Each gives one estimate
+  per step with no messages, and a third agent, the mediator, sees both twins' features, notes
+  and estimates and makes the team's prediction.
 - `memory="persistent"`: one continuing conversation per twin for the whole run instead of a
   fresh call per round. Each round only adds a short user turn (the previous step's outcome,
   the new case, the partner's latest message); there are no notes and no history table, since
@@ -72,6 +75,13 @@ on you see what your partner sent in the earlier rounds of this step{shown}. The
 prediction is the average of your two final-round estimates, and the team is scored by squared \
 error. After the final round the true y is revealed to both of you."""
 
+# `team_rule="mediator"`: the twins only predict; a mediator (`consensus.mediator`) decides.
+ROUNDS_MEDIATOR = """\
+Each step you give one estimate of y; you and your partner do not exchange messages. A third \
+agent, the mediator, is shown your features, your notes and your estimate, and the same for your \
+partner, and makes the team's prediction, which is scored by squared error. After each step the \
+true y is revealed to you."""
+
 ROUNDS_JOINT = """\
 Each step has {n_rounds} rounds. In every round you and your partner simultaneously send each \
 other a message (at most {max_chars} characters) and each propose a joint team estimate of y. \
@@ -79,6 +89,19 @@ From round 2 on you see what your partner sent in the earlier rounds of this ste
 two of you must submit one joint estimate: the team's prediction is the joint estimate you both \
 propose in the final round (if your final proposals differ, their average is used), and the \
 team is scored by squared error. After the final round the true y is revealed to both of you."""
+
+# `team_rule="consensus"` (`consensus.consensus_game.LLMConsensus`): the twins must agree; a step
+# ends as soon as their estimates are within `tol`, and no agreement after the last round costs a
+# fixed penalty instead of being averaged (LogBook note 2026-11-11).
+ROUNDS_CONSENSUS = """\
+Each step has at most {n_rounds} rounds. In every round you and your partner simultaneously send \
+each other a message (at most {max_chars} characters) and each propose a team estimate of y. \
+From round 2 on you see what your partner sent in the earlier rounds of this step{shown}. The two \
+of you must reach a consensus: as soon as your two proposals in a round are within {tol} of each \
+other, the step ends and the team's prediction is their average, scored by squared error. If you \
+have not agreed by the end of round {n_rounds}, the team's prediction is not used and the team \
+gets a fixed penalty of {penalty} for the step instead. After the step ends the true y is \
+revealed to both of you."""
 
 TOOL_PAR = """
 
@@ -216,11 +239,11 @@ TWIN_LINE_ONLINE = (
 
 TRAIN_SYSTEM = """\
 You are agent {name}. You are in a learning phase on your own. You will be shown {n_train} \
-earlier cases in {n_batches} batches. Each case has {d} numeric features {f}1..{f}{d} and a \
+earlier cases in {n_batches} batches. Each case has {d} numeric features {names} and a \
 real-valued target y. Later you will have to predict y for new cases from these features, \
 together with a partner who sees other features of the same cases. You will not see these \
 cases again: only your notes are kept. After each batch, rewrite your notes (at most \
-{notes_chars} characters) with the model or rules you will use to predict y from {f}1..{f}{d}, how \
+{notes_chars} characters) with the model or rules you will use to predict y from {names}, how \
 reliable they are, and anything else worth remembering. Make them concrete enough that you can \
 compute a prediction from your notes alone."""
 
@@ -229,7 +252,7 @@ compute a prediction from your notes alone."""
 # case shown so far, which the twin has seen, though it keeps only its notes.
 TRAIN_TOOL_PAR = """
 
-You have a regression tool. To use it, put feature names in `regress` (any of {f}1..{f}{d}). It \
+You have a regression tool. To use it, put feature names in `regress` (any of {names}). It \
 fits y on them plus an intercept by least squares over all cases you have been shown so far \
 (this batch and the earlier ones), and returns the coefficients and the in-sample and \
 leave-one-out mean squared errors. A reply with a non-empty `regress` is a tool call: its notes \
@@ -254,6 +277,28 @@ FEATURE_LINE = (
     "things about the case that you do not, and the other way round."
 )
 
+# `feature_labels` / `partner_labels` (`cov: overlap`): explicit feature names, with the shared
+# variables named the same for both twins. Said only when names are given.
+OVERLAP_FEATURE_LINE = (
+    "Your features are {own}; your partner's features are {other}. Features with the same name "
+    "are the same variable, so you both see {shared}; every other feature is seen by only one of "
+    "you."
+)
+NO_OVERLAP_FEATURE_LINE = (
+    "Your features are {own}; your partner's features are {other}. No feature is seen by both "
+    "of you."
+)
+PARTNER_INFO_LINE = "Your partner may have information that you do not."
+
+# `structure_hint`: the data-generating structure, stated in words (independent features, y
+# linear in seen and unseen features). The combination-rule probe (LogBook 2026-11-12) found that
+# independence alone is read as "average", while additivity plus independence gives the sum.
+STRUCTURE_HINT = (
+    "All the features (yours, your partner's, and any that neither of you sees) are "
+    "statistically independent of one another. y is a linear function of all of them plus "
+    "independent noise: a weighted sum of the features you see and the features you do not see."
+)
+
 TWIN_LINE = (
     "Your partner is another instance of the same AI model as you, with the same instructions "
     "and its own linear model fitted to its own features."
@@ -266,9 +311,11 @@ def reply_schema(
     notes: bool = True,
     logistic: bool = False,
     interval: bool = False,
+    message: bool = True,
 ) -> dict:
     """JSON schema of a twin's reply; adds the `regress` tool field if `columns` is given and
-    an 80% interval (`low`, `high`) if `interval`."""
+    an 80% interval (`low`, `high`) if `interval`; `message=False` drops the message (mediator
+    rule: the twins only predict)."""
     if logistic:
         est = (
             "Your proposed joint probability that y = 1" if joint else "Your probability that y = 1"
@@ -279,6 +326,8 @@ def reply_schema(
         "message": {"type": "string", "description": "Message to your partner (short)."},
         "estimate": {"type": "number", "description": f"{est} for this round."},
     }
+    if not message:
+        del props["message"]
     if logistic:
         props["estimate"].update(minimum=0, maximum=1)
     if interval:
@@ -448,7 +497,9 @@ class LLMTwin:
     update_linear : bool
         Whether the linear tool keeps learning from revealed labels (solo regression on own x).
     team_rule : str
-        "average" (each gives its own estimate) or "joint" (each proposes the team estimate).
+        "average" (each gives its own estimate), "joint" (each proposes the team estimate) or
+        "mediator" (each gives one estimate per step, no messages; a mediator decides, see
+        `consensus.mediator`; needs one round per step).
     show_partner_estimates : bool
         Show the partner's numeric estimates next to its messages (and in the history table).
     tools : bool
@@ -527,6 +578,12 @@ class LLMTwin:
         history_features: bool = False,
         train_tool: bool = False,
         train_tool_calls: int = 3,
+        consensus_tol: float = 0.1,
+        penalty: float = 10.0,
+        feature_labels: list[str] | None = None,
+        partner_labels: list[str] | None = None,
+        structure_hint: bool = False,
+        partner_info: bool = False,
     ) -> None:
         if learner not in ("linear", "self"):
             raise ValueError(f"learner must be 'linear' or 'self', got {learner!r}")
@@ -549,6 +606,18 @@ class LLMTwin:
         self.train_tool, self.train_tool_calls = train_tool, train_tool_calls
         self.history_features = history_features
         self.f = name.lower() if self.distinct else "x"  # feature-name prefix
+        # Explicit names (overlap design) or the prefix numbering; `labels_given` switches the
+        # prompts to named features and says which names the partner has.
+        self.labels_given = feature_labels is not None
+        if self.labels_given:
+            if self.distinct or partner_labels is None or len(feature_labels) != linear.d:
+                raise ValueError(
+                    "feature_labels needs feature_names='shared', partner_labels and one name "
+                    "per feature"
+                )
+        self.labels = list(feature_labels or [f"{self.f}{i + 1}" for i in range(linear.d)])
+        self.partner_labels = list(partner_labels or [])
+        self.structure_hint, self.partner_info = structure_hint, partner_info
         self.train_batch = train_batch
         if pooling_hint not in POOLING_HINTS:
             raise ValueError(f"pooling_hint must be one of {sorted(POOLING_HINTS)}")
@@ -562,13 +631,23 @@ class LLMTwin:
             raise ValueError(f"memory must be 'notes' or 'persistent', got {memory!r}")
         if auto_regress and not tools:
             raise ValueError("auto_regress requires tools=True")
-        if team_rule not in ("average", "joint"):
-            raise ValueError(f"team_rule must be 'average' or 'joint', got {team_rule!r}")
+        if team_rule not in ("average", "joint", "mediator", "consensus"):
+            raise ValueError(
+                "team_rule must be 'average', 'joint', 'mediator' or 'consensus', "
+                f"got {team_rule!r}"
+            )
+        if team_rule == "consensus" and (isinstance(linear, LogisticAgent) or memory != "notes"):
+            raise ValueError("team_rule='consensus' needs the regression task and notes memory")
+        if team_rule == "mediator" and (n_rounds != 1 or tools or memory != "notes"):
+            raise ValueError("team_rule='mediator' needs one round, no tools and notes memory")
         self.name, self.linear, self.backend = name, linear, backend
         self.n_rounds, self.T = n_rounds, T
         self.history_len, self.max_chars, self.notes_chars = history_len, max_chars, notes_chars
         self.update_linear = update_linear
         self.joint = team_rule == "joint"
+        self.mediated = team_rule == "mediator"
+        self.consensus = team_rule == "consensus"
+        self.penalty = penalty
         self.show_est = show_partner_estimates
         self.max_tool_calls = max_tool_calls if tools else 0
         self.auto_regress = auto_regress
@@ -580,7 +659,7 @@ class LLMTwin:
         self.conv = None  # persistent conversation, created on the first call
         self.columns = (
             (
-                [f"{self.f}{i + 1}" for i in range(linear.d)]
+                list(self.labels)
                 + ["own_model"]
                 + (["partner_open"] if show_partner_estimates else [])
             )
@@ -588,11 +667,12 @@ class LLMTwin:
             else []
         )
         self.schema = reply_schema(
-            self.joint,
+            self.joint or self.consensus,
             self.columns or None,
             notes=not self.persistent,
             logistic=self.logistic,
             interval=ask_interval,
+            message=not self.mediated,
         )
         self.notes = ""
         self.history: list[StepRecord] = []
@@ -605,6 +685,11 @@ class LLMTwin:
             rounds_tpl = ROUNDS_JOINT_LOGISTIC if self.joint else ROUNDS_AVERAGE_LOGISTIC
         else:
             rounds_tpl = ROUNDS_JOINT if self.joint else ROUNDS_AVERAGE
+            if self.mediated:
+                rounds_tpl = ROUNDS_MEDIATOR
+            if self.consensus:
+                rounds_tpl = ROUNDS_CONSENSUS
+                fmt.update(tol=f"{consensus_tol:g}", penalty=f"{penalty:g}")
         rounds_par = rounds_tpl.format(shown=shown, **fmt)
         if pooling_hint != "none":
             rounds_par += "\n\n" + POOLING_HINTS[pooling_hint]
@@ -654,6 +739,7 @@ class LLMTwin:
             other = "b" if self.f == "a" else "a"
             feat_line = FEATURE_LINE.format(own=self.f, other=other, d=linear.d)
             twin_line = f"{feat_line} {twin_line}".rstrip()
+        twin_line = " ".join(p for p in [self._partner_par(), twin_line] if p)
         self.system = sys_tpl.format(
             name=name,
             d=linear.d,
@@ -666,6 +752,11 @@ class LLMTwin:
             tool_par=tool_par,
             study_par=(STUDY_PAR_ONLINE if self.online else STUDY_PAR.format(n_train=n_train)),
         )
+        if self.labels_given:  # some features may be shared, so not "different features"
+            self.system = self.system.replace(
+                "your partner sees different features of the same case.",
+                "your partner sees some other features of the same case.",
+            )
 
     def model_prediction(self, x: np.ndarray) -> float:
         """The linear tool's prediction (solo head)."""
@@ -692,12 +783,14 @@ class LLMTwin:
             n_batches=n_batches,
             d=d,
             notes_chars=self.notes_chars,
-            f=self.f,
+            names=self._names_str(),
         )
+        if self.labels_given:  # who sees what (and the hints), also while learning alone
+            system += " " + self._partner_par()
         schema = TRAIN_SCHEMA
-        cols = [f"{self.f}{i + 1}" for i in range(d)]
+        cols = list(self.labels)
         if self.train_tool:
-            system += TRAIN_TOOL_PAR.format(f=self.f, d=d, max_calls=self.train_tool_calls)
+            system += TRAIN_TOOL_PAR.format(names=self._names_str(), max_calls=self.train_tool_calls)
             schema = {
                 **TRAIN_SCHEMA,
                 "properties": {
@@ -713,7 +806,7 @@ class LLMTwin:
         log = []
         for b in range(n_batches):
             sl = slice(b * self.train_batch, (b + 1) * self.train_batch)
-            head = ", ".join(f"{self.f}{i + 1}" for i in range(d)) + " | y"
+            head = ", ".join(self.labels) + " | y"
             rows = [
                 ", ".join(f"{v:.3f}" for v in xr) + f" | {yr:.3f}" for xr, yr in zip(X[sl], y[sl])
             ]
@@ -757,10 +850,11 @@ class LLMTwin:
         self, t: int, rnd: int, x: np.ndarray, partner: list[tuple[str, float]], extra=()
     ) -> str:
         """User prompt for step t, round rnd (both 0-based); `partner` = [(message, estimate)]."""
-        lines = [
-            f"Step {t + 1} of {self.T}, round {rnd + 1} of {self.n_rounds}.",
-            self._features_line(x),
-        ]
+        upto = "up to " if self.consensus else ""
+        header = f"Step {t + 1} of {self.T}" + (
+            "." if self.mediated else f", round {rnd + 1} of {upto}{self.n_rounds}."
+        )
+        lines = [header, self._features_line(x)]
         if not self.self_learn:
             lines.append(self._model_line(x))
 
@@ -776,7 +870,7 @@ class LLMTwin:
         elif partner:
             lines.append("Partner's messages this step:")
             lines += [f"  round {i + 1}: {fmt(m, e)}" for i, (m, e) in enumerate(partner)]
-        else:
+        elif not self.mediated:
             lines.append("Partner's messages this step: none yet.")
         lines.append(f"Your notes: {self.notes or '(empty)'}")
         if self.history:
@@ -785,7 +879,7 @@ class LLMTwin:
             po = " | partner round 1" if self.show_est else ""
             solo = "your round 1" if self.self_learn else "your model"
             fx = (
-                "".join(f"{self.f}{i + 1} | " for i in range(self.linear.d))
+                "".join(f"{lab} | " for lab in self.labels)
                 if self.history_features
                 else ""
             )
@@ -796,10 +890,13 @@ class LLMTwin:
                     return ""
                 return "".join(f" | {v:.3f}" for v in h.x)
 
+            def team(h: StepRecord) -> str:  # consensus rule: no team value without agreement
+                return "no agreement" if np.isnan(h.team) else f"{h.team:.3f}"
+
             lines += [
                 f"  {h.t + 1}{feats(h)} | {h.model_pred:.3f}"
                 + (f" | {h.partner_open:.3f}" if self.show_est else "")
-                + f" | {h.final_est:.3f} | {h.partner_final:.3f} | {h.team:.3f} | {h.y:.3f}"
+                + f" | {h.final_est:.3f} | {h.partner_final:.3f} | {team(h)} | {h.y:.3f}"
                 for h in recent
             ]
             H = self.history
@@ -810,10 +907,18 @@ class LLMTwin:
             else:
                 mse = lambda f: np.mean([(f(h) - h.y) ** 2 for h in H])  # noqa: E731
                 score = "Mean squared error"
+            if self.consensus:  # a step without agreement scores the penalty
+                team_score = np.mean(
+                    [self.penalty if np.isnan(h.team) else (h.team - h.y) ** 2 for h in H]
+                )
+                n_fail = sum(bool(np.isnan(h.team)) for h in H)
+                team_txt = f"team {team_score:.3f} (penalties included; no agreement in {n_fail})"
+            else:
+                team_txt = f"team {mse(lambda h: h.team):.3f}"
             lines.append(
                 f"{score} over all {len(H)} past steps: {solo} "
                 f"{mse(lambda h: h.model_pred):.3f}, your final {mse(lambda h: h.final_est):.3f}, "
-                f"team {mse(lambda h: h.team):.3f}."
+                f"{team_txt}."
             )
         lines += list(extra)
         lines.append(self._reply_line())
@@ -823,9 +928,32 @@ class LLMTwin:
         """The current case's features: an unnamed array with shared names (original prompt), or
         named values (a1=..., ...) with distinct names, so the names in the prompt match the
         training cases and the system prompt."""
-        if not self.distinct:
+        if not (self.distinct or self.labels_given):
             return f"Your features: {np.array2string(x, precision=3, separator=', ')}"
-        return "Your features: " + ", ".join(f"{self.f}{i + 1}={v:.3f}" for i, v in enumerate(x))
+        return "Your features: " + ", ".join(f"{lab}={v:.3f}" for lab, v in zip(self.labels, x))
+
+    def _names_str(self) -> str:
+        """Feature names for the learning-phase prompt: "x1..x3" (as before) or the explicit list."""
+        if self.labels_given:
+            return ", ".join(self.labels)
+        return f"{self.f}1..{self.f}{self.linear.d}"
+
+    def _partner_par(self) -> str:
+        """Who sees which features, and the optional partner-information and structure hints."""
+        parts = []
+        if self.labels_given:
+            shared = [lab for lab in self.labels if lab in self.partner_labels]
+            fmt = dict(own=", ".join(self.labels), other=", ".join(self.partner_labels))
+            parts.append(
+                OVERLAP_FEATURE_LINE.format(shared=" and ".join(shared), **fmt)
+                if shared
+                else NO_OVERLAP_FEATURE_LINE.format(**fmt)
+            )
+        if self.partner_info:
+            parts.append(PARTNER_INFO_LINE)
+        if self.structure_hint:
+            parts.append(STRUCTURE_HINT)
+        return " ".join(parts)
 
     def _model_line(self, x: np.ndarray) -> str:
         if self.logistic:
@@ -843,8 +971,12 @@ class LLMTwin:
             what = (
                 "your proposal for the joint estimate of y" if self.joint else "your estimate of y"
             )
+            if self.consensus:
+                what = "your proposal for the team estimate of y"
         if self.ask_interval:
             what += " (with your 80% interval, low and high)"
+        if self.mediated:
+            return f"Reply with {what} for this step and your updated notes."
         if self.persistent:
             return f"Reply with your message to your partner and {what} for this round."
         return (
@@ -898,7 +1030,7 @@ class LLMTwin:
         """History as rows of tool columns + y."""
         rows = []
         for h in self.history:
-            row = {f"{self.f}{i + 1}": float(v) for i, v in enumerate(h.x)}
+            row = {lab: float(v) for lab, v in zip(self.labels, h.x)}
             row.update(own_model=h.model_pred, partner_open=h.partner_open, y=h.y)
             rows.append(row)
         return rows
@@ -910,7 +1042,7 @@ class LLMTwin:
         """
         if rnd == 0:
             self._own_step = []
-        current = {f"{self.f}{i + 1}": float(v) for i, v in enumerate(x)}
+        current = {lab: float(v) for lab, v in zip(self.labels, x)}
         if not self.self_learn:
             current["own_model"] = self.model_prediction(x)
         if partner and self.show_est:
@@ -974,7 +1106,9 @@ class LLMTwin:
         """An independent copy in the current state (notes memory only): notes, history and the
         step's own messages are copied, the backend and the (unused) linear learner are shared."""
         if self.persistent:
-            raise ValueError("fork needs memory='notes' (a persistent conversation can't be copied)")
+            raise ValueError(
+                "fork needs memory='notes' (a persistent conversation can't be copied)"
+            )
         if self.update_linear:
             raise ValueError("fork needs update_linear=False (the linear learner is shared)")
         new = copy.copy(self)
