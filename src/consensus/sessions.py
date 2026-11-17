@@ -242,7 +242,7 @@ your features, own_opening, partner_opening, arithmetic expressions of these, or
 whose values you give;
 - communicate any information to your partner, such as your features or your predictions;
 - make use of your partner's features in any way you want{models_line}.
-
+{talk_par}
 You can make at most {cap} tool calls per query. Call next_query to begin."""
 
 # Related targets (LogBook 2026-11-16): what a twin is told about its partner's target.
@@ -281,6 +281,13 @@ you both work on the same case.
 sends something new, submits a prediction, or is also waiting.
 - submit_prediction(y): records your own final estimate of y (once per query); it waits until \
 your partner has also submitted its final, then {reveal}."""
+
+# `talk_free` (LogBook 2026-11-16, Kanad's spec): one line saying the twins can talk freely and
+# need not worry about the cost. It says nothing about what to talk about or why.
+TALK_FREE = """
+You can talk with your partner as much as you want: messages are free, so you do not need to \
+worry about the cost.
+"""
 
 # `prompt_style: clear_models` (LogBook 2026-11-14): the clear prompt plus one freedom, stated
 # outright: a new model can be built on any features the twin sees, its partner's included.
@@ -1144,14 +1151,14 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
 def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bool,
                same_y: bool = False, model_tools: bool = False,
                prompt_style: str = "standard", partner_target: str = "same",
-               query_api: bool = False) -> str:
+               query_api: bool = False, talk_free: bool = False) -> str:
     """The start_queries result for twin k (`{n_train}` is filled in at the call)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
     if partner_target not in ("same", "untold", "told"):
         raise ValueError(f"partner_target must be 'same', 'untold' or 'told', got {partner_target!r}")
     if prompt_style not in ("clear", "clear_models", "clear_history") and (
-            partner_target != "same" or query_api):
-        raise ValueError("partner_target and query_api need a clear prompt style")
+            partner_target != "same" or query_api or talk_free):
+        raise ValueError("partner_target, query_api and talk_free need a clear prompt style")
     if api.related and partner_target == "same":
         raise ValueError("related targets: partner_target must be 'untold' or 'told'")
     if prompt_style in ("clear", "clear_models", "clear_history"):
@@ -1172,6 +1179,7 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
             partner_par=partner.format(own=", ".join(labels), other_feats=", ".join(other)),
             T=api.T, rule_par=rule, cap=api.cap,
             query_api=QUERY_API.format(reveal=reveal) if query_api else "",
+            talk_par=TALK_FREE if talk_free else "",
             models_line=(MODELS_LINE_CLEAR if prompt_style == "clear_models"
                          else MODELS_LINE_CLEAR + HISTORY_LINES
                          if prompt_style == "clear_history" else ""))
@@ -1230,12 +1238,13 @@ class TwinSession:
         prompt_style: str = "standard",
         partner_target: str = "same",
         query_api: bool = False,
+        talk_free: bool = False,
     ) -> None:
         self.name, self.api, self.model, self.effort = name, api, model, effort
         self.max_budget_usd, self.max_continues = max_budget_usd, max_continues
         self.prompt_style = prompt_style
         self.intro = intro_text(api, name, structure_hint, partner_info, same_y, model_tools,
-                                prompt_style, partner_target, query_api)
+                                prompt_style, partner_target, query_api, talk_free)
         self.model_tools = model_tools
         labels = api.labels[name]
         self.system = SYSTEM_TRAIN.format(

@@ -134,6 +134,7 @@ def main(argv: list[str] | None = None) -> Path:
                 prompt_style=ag.get("prompt_style", "standard"),
                 partner_target=ag.get("partner_target", "same"),
                 query_api=ag.get("query_api", False),
+                talk_free=ag.get("talk_free", False),
                 max_budget_usd=ag["max_budget_usd"],
                 max_continues=ag["max_continues"],
                 live_dir=tr,

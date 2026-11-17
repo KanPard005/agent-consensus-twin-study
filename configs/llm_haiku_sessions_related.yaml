@@ -50,6 +50,7 @@ agent:
   history_tools: true
   partner_target: untold      # untold | told
   query_api: true
+  talk_free: false            # true: "talk as much as you want ... no need to worry about the cost"
   max_budget_usd: 3.0
   max_continues: 10
   page_size: 25

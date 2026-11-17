@@ -107,10 +107,10 @@ def test_related_needs_individual_rule():
                      LABELS, budget=4, team_rule="average")
 
 
-def _session(api, partner_target, query_api=True):
+def _session(api, partner_target, query_api=True, talk_free=False):
     return TwinSession("A", api, structure_hint=False, partner_info=True, same_y=True,
                        model_tools=True, prompt_style="clear_history",
-                       partner_target=partner_target, query_api=query_api)
+                       partner_target=partner_target, query_api=query_api, talk_free=talk_free)
 
 
 def test_prompt_arms_and_query_api():
@@ -130,6 +130,17 @@ def test_prompt_arms_and_query_api():
     with pytest.raises(ValueError):
         _session(api, "same")
     assert "Query API" not in _session(api, "told", query_api=False).intro
+
+
+def test_talk_free_line():
+    api, _ = make_api()
+    off, on = _session(api, "told").intro, _session(api, "told", talk_free=True).intro
+    line = ("You can talk with your partner as much as you want: messages are free, so you do "
+            "not need to worry about the cost.")
+    assert line not in off and line in on
+    # Only that line is added, just before the tool-call cap.
+    assert on.replace(line + "\n\n", "") == off
+    assert on.index(line) < on.index("You can make at most")
 
 
 def test_related_limits_match_the_note():
