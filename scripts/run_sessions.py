@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from run import train_twins  # noqa: E402
 
-from consensus.data import RelatedTargetsEnv, build_env  # noqa: E402
+from consensus.data import RelatedTargetsEnv, build_env, rig_first_queries  # noqa: E402
 from consensus.sessions import ConsensusAPI, TwinSession, run_pair  # noqa: E402
 from consensus.utils import git_hash, load_config, make_run_dir, run_rng  # noqa: E402
 
@@ -71,6 +71,13 @@ def main(argv: list[str] | None = None) -> Path:
             _, tx_B, _, ty_B = env.sample_pair(cfg["train"]["n_B"], rng)
             train = {"A": (tx_A, ty_A), "B": (tx_B, ty_B)}
             x_A, x_B, y_A, y_B = env.sample_pair(T, rng)
+            # Rigged first partner queries (LogBook note 2026-11-17, a labelled manipulation):
+            # env.rig_first = {m, partner, noise} replaces rows 0..m-1 with selected cases from
+            # their own stream (seed, run, 2); later rows are the unrigged draws.
+            rig = cfg["env"].get("rig_first")
+            if rig:
+                x_A, x_B, y_A, y_B = rig_first_queries(
+                    env, (x_A, x_B, y_A, y_B), rig, np.random.default_rng([seed, r, 2]))
             y = {"A": y_A, "B": y_B}
             # Solo queries first (LogBook 2026-11-16): agent.solo_queries = K cases each twin
             # answers alone before the partner phase. Drawn from their own stream (seed, run,
@@ -162,6 +169,7 @@ def main(argv: list[str] | None = None) -> Path:
         sq = [ag["penalty"] if rc["failed"] else (rc["agreed"] - rc["y"]) ** 2 for rc in done]
         summary[f"run{r}"] = {
             "cost_usd": sum(tw.cost_usd for tw in twins.values()),  # cumulative per session
+            "rig_first": cfg["env"].get("rig_first"),
             "tokens": {k: tw.tokens for k, tw in twins.items()},
             "results": {k: tw.results for k, tw in twins.items()},
             "continues": {k: tw.n_continues for k, tw in twins.items()},

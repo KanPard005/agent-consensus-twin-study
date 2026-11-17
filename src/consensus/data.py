@@ -385,3 +385,51 @@ def build_env(cfg: dict, rng: np.random.Generator) -> LinearTwinEnv:
         return ProductTwinEnv.from_config(cfg, rng)
     raise ValueError(
         f"unknown task {task!r}; choose 'regression', 'logistic', 'product' or 'related'")
+
+
+# Thresholds for `rig_first_queries` (LogBook note 2026-11-17, "Rigged first partner queries"),
+# on the partner-block signals scaled to unit variance and on |eps| / sigma.
+RIG_PARTNER = {"low": lambda s: s < 0.3, "high": lambda s: s > 1.0}
+RIG_NOISE = {"low": lambda e: e < 0.3, "high": lambda e: e > 1.6}
+
+
+def rig_first_queries(env: RelatedTargetsEnv, queries: tuple, spec: dict,
+                      rng: np.random.Generator, pool: int = 20000) -> tuple:
+    """Replace the first `spec["m"]` partner queries with cases chosen from the true distribution
+    (a labelled manipulation of the data stream; LogBook note 2026-11-17).
+
+    For twin A, y_A = o_A + s_A + eps with s_A = <x^B, w^B> the part only the partner's features
+    explain; for B, s_B = <x^A, v^A>. `spec["partner"]` ("low" | "high") selects cases where
+    both |s_A| and |s_B| (in units of their standard deviation) are below 0.3 / above 1.0, i.e.
+    the partner's information is useless / decisive for both twins at once; `spec["noise"]`
+    ("low" | "high") selects |eps| below 0.3 sigma / above 1.6 sigma. Candidates are drawn from
+    `rng` (a separate stream), so rows m.. of `queries` are left exactly as drawn.
+
+    Parameters
+    ----------
+    env : RelatedTargetsEnv
+    queries : (x_A, x_B, y_A, y_B) as returned by `env.sample_pair(T, ...)`
+    spec : {"m": int, "partner": "low" | "high", "noise": "low" | "high"}
+    rng : generator for the candidate pool
+    pool : candidates drawn per attempt
+
+    Returns
+    -------
+    (x_A, x_B, y_A, y_B) with rows 0..m-1 replaced (copies; the inputs are not modified).
+    """
+    m = int(spec["m"])
+    keep_p, keep_e = RIG_PARTNER[spec["partner"]], RIG_NOISE[spec["noise"]]
+    sd_A, sd_B = np.linalg.norm(env.w_B), np.linalg.norm(env.v_A)  # Sigma = I blocks
+    chosen = []
+    while sum(len(c[0]) for c in chosen) < m:
+        cA, cB, cyA, cyB = env.sample_pair(pool, rng)
+        s_A, s_B = cB @ env.w_B / sd_A, cA @ env.v_A / sd_B
+        eps = cyA - cA @ env.w_A - cB @ env.w_B
+        ok = (keep_p(np.abs(s_A)) & keep_p(np.abs(s_B))
+              & keep_e(np.abs(eps) / env.sigma))
+        chosen.append((cA[ok], cB[ok], cyA[ok], cyB[ok]))
+    rigged = [np.concatenate([c[i] for c in chosen])[:m] for i in range(4)]
+    out = [q.copy() for q in queries]
+    for i in range(4):
+        out[i][:m] = rigged[i]
+    return tuple(out)
