@@ -106,3 +106,35 @@ def plot_budget(cells: dict, ns: list[int], cs: list[float], path: Path,
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def plot_over_time(cells: dict, cs: list[float], edges: list[int], path: Path) -> None:
+    """Long runs (LogBook 2026-11-17): per window of partner queries (x: window midpoint), one
+    colour per c. Panels: share of twins with a joint model on both feature sets; share fitting it
+    in at least half the queries of the window; share of queries in which the twin sends raw
+    features; mean MSE of the finals (dotted: online stacking learner on the same queries; grey
+    dashed: noise floor sigma^2 = 0.25, what a joint model reaches).
+
+    `cells[c]` holds per-window lists: `built`, `fitting`, `raw`, `mse`, `stack`.
+    """
+    fig, axes = plt.subplots(1, 4, figsize=(13.0, 3.2))
+    mid = [(a + b) / 2 for a, b in zip(edges, edges[1:])]
+    for i, c in enumerate(cs):
+        col, s = CAT[i], cells[c]
+        for ax, key in zip(axes, ("built", "fitting", "raw", "mse")):
+            ax.plot(mid, s[key], color=col, marker="o", ms=4, label=f"c = {c:g}")
+        axes[3].plot(mid, s["stack"], color=col, ls=":", lw=1)
+    axes[3].axhline(0.25, color=MUTED, ls="--", lw=1)
+    titles = ("joint model built", "joint model fitted (≥ half the window)",
+              "queries sending raw features", "MSE of finals (dotted: stacking learner)")
+    for ax, t in zip(axes, titles):
+        _style(ax)
+        ax.set_xticks(mid, [f"{a + 1}–{b}" for a, b in zip(edges, edges[1:])], fontsize=7)
+        ax.set_xlabel("partner queries")
+        ax.set_title(t, fontsize=9, color=INK)
+    for ax in axes[:3]:
+        ax.set_ylim(-0.03, 1.03)
+    axes[0].legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
