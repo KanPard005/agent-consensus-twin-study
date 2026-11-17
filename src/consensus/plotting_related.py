@@ -63,3 +63,43 @@ def plot_related(cells: dict, cs: list[float], path: Path, sigma: float = 0.5,
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def plot_budget(cells: dict, ns: list[int], cs: list[float], path: Path) -> None:
+    """Training budget sweep on related targets (LogBook 2026-11-16).
+
+    `cells[(c, n)]` holds per-twin lists `beta`, `mse`, `stack` (MSE of the online stacking
+    learner on the same queries) and per-pair `msg` (messages per query, both twins). Panels
+    against the number of training cases n (log scale), one colour per c:
+    left, the coefficient on the partner's opening (mean ± s.e. over twins; the dotted line at
+    height c is the best stacking weight); middle, the share of talkative pairs (at least 0.5
+    messages per query); right, the late MSE of the finals (solid) and of the stacking
+    learner on the same queries (dotted), which is the per-sample reference.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(11.0, 3.3))
+    x = np.array(ns, float)
+    for i, c in enumerate(cs):
+        col = CAT[i]
+        off = x * (1 + 0.06 * (i - 1))
+        get = lambda key: [np.asarray(cells[(c, n)][key], float) for n in ns]  # noqa: E731
+        m = np.array([np.nanmean(v) for v in get("beta")])
+        se = np.array([np.nanstd(v) / np.sqrt(np.isfinite(v).sum()) for v in get("beta")])
+        axes[0].errorbar(off, m, se, color=col, marker="o", ms=4, capsize=2, label=f"c = {c:g}")
+        axes[0].axhline(c, color=col, ls=":", lw=1)
+        axes[1].plot(x, [np.mean(v >= 0.5) for v in get("msg")], color=col, marker="o", ms=4)
+        axes[2].plot(off, [np.nanmean(v) for v in get("mse")], color=col, marker="o", ms=4)
+        axes[2].plot(off, [np.nanmean(v) for v in get("stack")], color=col, ls=":", lw=1)
+    titles = ("weight on partner's opening", "talkative pairs (≥ 0.5 msg / query)",
+              "late MSE (dotted: stacking learner)")
+    for ax, t in zip(axes, titles):
+        _style(ax)
+        ax.set_xscale("log")
+        ax.set_xticks(x, [str(n) for n in ns])
+        ax.minorticks_off()
+        ax.set_xlabel("training cases per twin")
+        ax.set_title(t, fontsize=9, color=INK)
+    axes[1].set_ylim(-0.05, 1.05)
+    axes[0].legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
