@@ -65,7 +65,8 @@ def plot_related(cells: dict, cs: list[float], path: Path, sigma: float = 0.5,
     plt.close(fig)
 
 
-def plot_budget(cells: dict, ns: list[int], cs: list[float], path: Path) -> None:
+def plot_budget(cells: dict, ns: list[int], cs: list[float], path: Path,
+                xlabel: str = "training cases per twin", log_x: bool = True) -> None:
     """Training budget sweep on related targets (LogBook 2026-11-16).
 
     `cells[(c, n)]` holds per-twin lists `beta`, `mse`, `stack` (MSE of the online stacking
@@ -80,7 +81,8 @@ def plot_budget(cells: dict, ns: list[int], cs: list[float], path: Path) -> None
     x = np.array(ns, float)
     for i, c in enumerate(cs):
         col = CAT[i]
-        off = x * (1 + 0.06 * (i - 1))
+        # Small horizontal offsets so the error bars of the c series do not overlap.
+        off = x * (1 + 0.06 * (i - 1)) if log_x else x + 0.012 * (x.max() - x.min()) * (i - 1)
         get = lambda key: [np.asarray(cells[(c, n)][key], float) for n in ns]  # noqa: E731
         m = np.array([np.nanmean(v) for v in get("beta")])
         se = np.array([np.nanstd(v) / np.sqrt(np.isfinite(v).sum()) for v in get("beta")])
@@ -93,10 +95,11 @@ def plot_budget(cells: dict, ns: list[int], cs: list[float], path: Path) -> None
               "late MSE (dotted: stacking learner)")
     for ax, t in zip(axes, titles):
         _style(ax)
-        ax.set_xscale("log")
+        if log_x:
+            ax.set_xscale("log")
         ax.set_xticks(x, [str(n) for n in ns])
         ax.minorticks_off()
-        ax.set_xlabel("training cases per twin")
+        ax.set_xlabel(xlabel)
         ax.set_title(t, fontsize=9, color=INK)
     axes[1].set_ylim(-0.05, 1.05)
     axes[0].legend(fontsize=8, frameon=False)
