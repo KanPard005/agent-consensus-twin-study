@@ -138,3 +138,34 @@ def plot_over_time(cells: dict, cs: list[float], edges: list[int], path: Path) -
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def plot_dims(cells: dict, dims: list[int], cs: list[float], path: Path) -> None:
+    """Feature dimension in the long runs (LogBook 2026-11-17): x = c, one colour per d.
+    Panels: messages per partner query; share of twins that built a joint model; late MSE of the
+    finals (dotted: online joint learner on the partner's raw features, the finite-T value of
+    the raw-feature route at that d; grey dashed: population stacking error 1.25 - c^2).
+
+    `cells[(d, c)]` holds `msgs_per_q`, `built`, `final_late`, `joint_late`.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.2))
+    x = np.arange(len(cs))
+    for i, d in enumerate(dims):
+        col = CAT[i]
+        for ax, key in zip(axes, ("msgs_per_q", "built", "final_late")):
+            ax.plot(x, [cells[(d, c)][key] for c in cs], color=col, marker="o", ms=5,
+                    label=f"d = {d}")
+        axes[2].plot(x, [cells[(d, c)]["joint_late"] for c in cs], color=col, ls=":", lw=1.2)
+    axes[2].plot(x, [1.25 - c**2 for c in cs], color=MUTED, ls="--", lw=1)
+    titles = ("messages per partner query", "twins that built a joint model",
+              "late MSE of finals (dotted: online joint learner)")
+    for ax, t in zip(axes, titles):
+        _style(ax)
+        ax.set_xticks(x, [f"{c:g}" for c in cs])
+        ax.set_xlabel("target cosine c")
+        ax.set_title(t, fontsize=9, color=INK)
+    axes[1].set_ylim(-0.03, 1.03)
+    axes[0].legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)

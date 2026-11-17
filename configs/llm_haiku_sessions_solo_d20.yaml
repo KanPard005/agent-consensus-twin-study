@@ -1,0 +1,62 @@
+# d = 20 variant of the long solo runs (K = 10, T = 100): 20 features per twin instead of 3.
+# The weights stay unit vectors, so the population references (solo 1.25, stacking 1.25 - c^2,
+# joint 0.25) are unchanged; only fitting a joint model needs more data and more numbers sent.
+# Launch: scripts/launch_related.py --config configs/llm_haiku_sessions_solo_d20.yaml
+#   --prefix llm_haiku_solo_K10_T100_d20 --cs 1.0 0.5 -0.5 --arms told
+#
+# Solo queries first (LogBook 2026-11-16, Kanad's idea): after training, each twin answers
+# agent.solo_queries = K queries alone (features, prediction, its own true y revealed), then the
+# partner phase runs as in the alignment sweep (told arm, individual scoring, T = 60). Question:
+# do twins that learned alone for longer rely less on each other? K = 0 is the alignment sweep.
+# Launch: scripts/launch_related.py --config configs/llm_haiku_sessions_solo.yaml
+#   --prefix llm_haiku_solo_K<K> --cs 1.0 0.5 -0.5 --arms told --set agent.solo_queries=<K>
+experiment: llm_haiku_sessions_solo_d20
+seed: 0
+n_runs: 1
+T: 100
+
+env:
+  task: related
+  target_align: 1.0
+  d_A: 20
+  d_B: 20
+  cov: controlled
+  lambda_xz: 0.0
+  rotate: true
+  align: 1.0
+  normalize: false
+  alpha: 1.0
+  weak: B
+  sigma: 0.5
+
+train:
+  n_A: 400
+  n_B: 400
+  lam: 1.0
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20], B: [b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16, b17, b18, b19, b20]}
+  budget: 400
+  study_all: true
+  team_rule: individual
+  tol: 0.01
+  max_attempts: 3
+  penalty: 10.0
+  max_chars: 2000
+  cap: 40
+  structure_hint: false
+  partner_info: true
+  same_y: true                # unused by the clear prompt styles
+  model_tools: true
+  models_in_training: true
+  prompt_style: clear_history
+  history_tools: true
+  partner_target: told        # untold | told
+  query_api: true
+  talk_free: false            # true: "talk as much as you want ... no need to worry about the cost"
+  solo_queries: 10            # K queries answered alone before the partner phase
+  max_budget_usd: 3.0
+  max_continues: 10
+  page_size: 400               # whole budget in one call (same tool practice for every K)
