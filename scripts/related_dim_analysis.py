@@ -1,11 +1,12 @@
-"""Feature dimension in the long runs (LogBook 2026-11-17): K = 10 solo queries, T = 100 partner
-queries, d = 3 vs d = 20 features per twin (weights are unit vectors in both, so the population
-references are the same: solo 1.25, stacking 1.25 - c^2, joint 0.25).
+"""Long-run variants compared (LogBook 2026-11-17): K = 10 solo queries, T = 100 partner queries;
+cells are (variant, c), e.g. d = 3 vs d = 20 features per twin, or noise sigma = 0.5 vs 1.5.
+Weights are unit vectors, so the population references are solo 1 + sigma^2, stacking
+1 - c^2 + sigma^2, joint sigma^2 (sigma read from each run's env.json).
 
 Per cell (d, c), over twins, partner phase:
 - MSE of openings, and of the best solo prediction <x^own, true own-target weights> (the logged
   training rows are truncated, so the true weights stand in for the twin's OLS fit; OLS on 400
-  cases adds about 1.25 d / 400, i.e. 0.01 at d = 3 and 0.06 at d = 20);
+  cases adds about (1 + sigma^2) d / 400, i.e. 0.01 at d = 3 and 0.06 at d = 20 for sigma = 0.5);
 - gap: mean (opening - best solo prediction)^2, the twin's estimation plus arithmetic error, and
   the share of queries in which the twin called fit_model (the tool that computes a prediction
   instead of the twin doing it by hand);
@@ -18,8 +19,8 @@ Per cell (d, c), over twins, partner phase:
 
 Usage:
     python scripts/related_dim_analysis.py [--prefixes llm_haiku_solo_K10_T100
-        llm_haiku_solo_K10_T100_d20] [--dims 3 20] [--late 40]
-Writes results/related_dim/<timestamp>/{table.md, stats.json, dims.png}.
+        llm_haiku_solo_K10_T100_d20] [--names "d = 3" "d = 20"] [--late 40] [--out related_dim]
+Writes results/<out>/<timestamp>/{table.md, stats.json, dims.png}.
 """
 
 from __future__ import annotations
@@ -90,30 +91,33 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--prefixes", nargs="+",
                     default=["llm_haiku_solo_K10_T100", "llm_haiku_solo_K10_T100_d20"])
-    ap.add_argument("--dims", nargs="+", type=int, default=[3, 20])
+    ap.add_argument("--names", nargs="+", default=["d = 3", "d = 20"])
     ap.add_argument("--cs", nargs="+", default=["1.0", "0.5", "-0.5"])
     ap.add_argument("--late", type=int, default=40)
+    ap.add_argument("--out", default="related_dim")
     args = ap.parse_args()
-    out = make_run_dir(ROOT / "results", "related_dim")
+    out = make_run_dir(ROOT / "results", args.out)
     keys = ["open_mse", "best_solo_mse", "gap", "fit_share", "msgs_per_q", "final_late",
             "stack_late", "joint_late", "beta", "built"]
     stats, lines = {}, []
-    lines.append("| d | c | twins | $/pair | " + " | ".join(keys) + " | talkative |")
+    lines.append("| variant | c | twins | $/pair | " + " | ".join(keys) + " | talkative |")
     lines.append("|" + "---|" * (len(keys) + 5))
-    for d, pre in zip(args.dims, args.prefixes):
+    for d, pre in zip(args.names, args.prefixes):
         for c in args.cs:
             pairs = load_pairs(pre, c, "told")
             tw = [twin_measures(p, k, args.late) for p in pairs for k in "AB"]
             # Talkative per pair (messages count for both twins), as in earlier entries.
             talk = float(np.mean([t["msgs_per_q"] >= 0.5 for t in tw]))
             cell = {kk: float(np.nanmean([t[kk] for t in tw])) for kk in keys}
-            cell.update(twins=len(tw), talkative=talk,
+            sigma = float(pairs[0]["env"]["sigma"])
+            cell.update(twins=len(tw), talkative=talk, sigma=sigma,
+                        stack_ref=1 - float(c) ** 2 + sigma**2, joint_ref=sigma**2,
                         cost_per_pair=float(np.mean([p["cost"] for p in pairs])))
-            stats[f"d{d}_c{c}"] = dict(cell=cell, twins=tw)
+            stats[f"{d}_c{c}"] = dict(cell=cell, twins=tw)
             lines.append(f"| {d} | {c} | {len(tw)} | {cell['cost_per_pair']:.2f} | "
                          + " | ".join(f"{cell[kk]:.2f}" for kk in keys) + f" | {talk:.2f} |")
-    plot_dims({(d, float(c)): stats[f"d{d}_c{c}"]["cell"] for d in args.dims for c in args.cs},
-              args.dims, [float(c) for c in args.cs], out / "dims.png")
+    plot_dims({(d, float(c)): stats[f"{d}_c{c}"]["cell"] for d in args.names for c in args.cs},
+              args.names, [float(c) for c in args.cs], out / "dims.png")
     (out / "table.md").write_text("\n".join(lines) + "\n")
     (out / "stats.json").write_text(json.dumps(stats, indent=1))
     print("\n".join(lines))

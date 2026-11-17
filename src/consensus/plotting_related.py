@@ -140,13 +140,15 @@ def plot_over_time(cells: dict, cs: list[float], edges: list[int], path: Path) -
     plt.close(fig)
 
 
-def plot_dims(cells: dict, dims: list[int], cs: list[float], path: Path) -> None:
-    """Feature dimension in the long runs (LogBook 2026-11-17): x = c, one colour per d.
+def plot_dims(cells: dict, dims: list[str], cs: list[float], path: Path) -> None:
+    """Long-run variants (LogBook 2026-11-17, e.g. d = 3 vs 20, sigma = 0.5 vs 1.5): x = c, one
+    colour per variant.
     Panels: messages per partner query; share of twins that built a joint model; late MSE of the
     finals (dotted: online joint learner on the partner's raw features, the finite-T value of
-    the raw-feature route at that d; grey dashed: population stacking error 1.25 - c^2).
+    the raw-feature route in that variant; dashed, same colour: population stacking error
+    1 - c^2 + sigma^2).
 
-    `cells[(d, c)]` holds `msgs_per_q`, `built`, `final_late`, `joint_late`.
+    `cells[(variant, c)]` holds `msgs_per_q`, `built`, `final_late`, `joint_late`, `stack_ref`.
     """
     fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.2))
     x = np.arange(len(cs))
@@ -154,11 +156,12 @@ def plot_dims(cells: dict, dims: list[int], cs: list[float], path: Path) -> None
         col = CAT[i]
         for ax, key in zip(axes, ("msgs_per_q", "built", "final_late")):
             ax.plot(x, [cells[(d, c)][key] for c in cs], color=col, marker="o", ms=5,
-                    label=f"d = {d}")
+                    label=str(d))
         axes[2].plot(x, [cells[(d, c)]["joint_late"] for c in cs], color=col, ls=":", lw=1.2)
-    axes[2].plot(x, [1.25 - c**2 for c in cs], color=MUTED, ls="--", lw=1)
+        axes[2].plot(x, [cells[(d, c)]["stack_ref"] for c in cs], color=col, ls="--", lw=0.8,
+                     alpha=0.6)
     titles = ("messages per partner query", "twins that built a joint model",
-              "late MSE of finals (dotted: online joint learner)")
+              "late MSE (dotted: online joint learner;\ndashed: population stacking)")
     for ax, t in zip(axes, titles):
         _style(ax)
         ax.set_xticks(x, [f"{c:g}" for c in cs])
