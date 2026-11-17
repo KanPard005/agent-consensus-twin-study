@@ -172,3 +172,34 @@ def plot_dims(cells: dict, dims: list[str], cs: list[float], path: Path) -> None
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def plot_rig(stats: dict, arms: list[str], windows: list[str], path: Path) -> None:
+    """Rigged first partner queries (LogBook note 2026-11-17): per window of partner queries
+    (the first is the rigged one, shaded), one line per arm and the control (grey). Panels:
+    messages sent per query, share of queries asking for the partner's features, share sending
+    own features, share of twins with a joint model, MSE of the finals.
+
+    `stats[arm][measure]` is a list over windows (means over twins).
+    """
+    keys = (("msgs", "messages sent per query"), ("asked", "queries asking for features"),
+            ("raw", "queries sending own features"), ("built", "twins with a joint model"),
+            ("mse", "MSE of finals"))
+    fig, axes = plt.subplots(1, len(keys), figsize=(15.0, 3.2))
+    x = np.arange(len(windows))
+    for i, arm in enumerate(arms):
+        col = MUTED if arm == "control" else CAT[(i - 1) % len(CAT)]
+        label = arm.replace("llm_haiku_rig_", "").replace("low", "−").replace("high", "+")
+        for ax, (key, _) in zip(axes, keys):
+            ax.plot(x, stats[arm][key], color=col, marker="o", ms=4, label=label,
+                    lw=2.0 if arm == "control" else 1.4)
+    for ax, (_, title) in zip(axes, keys):
+        _style(ax)
+        ax.axvspan(-0.3, 0.3, color=MUTED, alpha=0.12, lw=0)
+        ax.set_xticks(x, windows, fontsize=7)
+        ax.set_xlabel("partner queries (first window rigged)")
+        ax.set_title(title, fontsize=9, color=INK)
+    axes[0].legend(fontsize=7, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
