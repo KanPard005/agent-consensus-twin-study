@@ -106,6 +106,7 @@ def main(argv: list[str] | None = None) -> Path:
             page_size=ag.get("page_size", 25),
             practice=ag.get("practice", False),
             solo=solo,
+            fit_hint=ag.get("fit_hint", False),
             tol=ag["tol"],
             max_attempts=ag["max_attempts"],
             penalty=ag["penalty"],

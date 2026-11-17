@@ -445,7 +445,13 @@ class ConsensusAPI:
         page_size: int = 25,
         practice: bool = False,
         solo: dict | None = None,
+        fit_hint: bool = False,
     ) -> None:
+        # Fit-readiness hint (LogBook 2026-11-17, a labelled manipulation): add_case and add_row
+        # also say how many cases with y the model needs before fit_model can fit it (the
+        # regression needs n >= columns + 3), or that it can fit it now. Tests whether twins at
+        # d = 8, who stopped collecting joint-model rows just short of that, use it once told.
+        self.fit_hint = fit_hint
         # Solo queries first (LogBook 2026-11-16): `solo = {"x": {"A": X_A, "B": X_B}, "y": y or
         # {"A": y_A, "B": y_B}}` gives K cases each twin answers alone after training and before
         # the partner phase; their y (the twin's own target) is revealed after each prediction
@@ -1008,6 +1014,17 @@ class ConsensusAPI:
             return None, f"Error: give values for {', '.join(missing)}."
         return row, ""
 
+    def _fit_status(self, m: dict) -> str:
+        """The fit-readiness line appended by add_case / add_row when `fit_hint` is on."""
+        if not self.fit_hint:
+            return ""
+        need = len(m["columns"]) + 3  # regress: n >= (columns + intercept) + 2
+        n = len(m["rows"])
+        if n >= need:
+            return " fit_model can fit this model now."
+        return (f" fit_model can fit this model once it has {need} cases with y "
+                f"({need - n} more).")
+
     def add_case(self, k: str, name: str, values: dict, query: int | None = None) -> str:
         if query is not None and self.history_tools and self.phase[k] != "solo":
             return self._add_past_case(k, name, values, int(query))
@@ -1023,7 +1040,7 @@ class ConsensusAPI:
                 self.solo_pending[k][name] = row
                 return (f"Case {self.solo_i[k] + 1} added to '{name}' "
                         f"({len(self.models[k][name]['rows'])} cases with y so far); its y will be "
-                        "added when it is revealed.")
+                        "added when it is revealed." + self._fit_status(self.models[k][name]))
             if err := self._in_query(k):
                 return err
             row, err = self._row(k, name, values or {})
@@ -1032,7 +1049,7 @@ class ConsensusAPI:
             m = self.models[k][name]
             m["pending"][self.q[k]] = row
             return (f"Case {self.q[k] + 1} added to '{name}' ({len(m['rows'])} cases with y so "
-                    "far); its y will be added when it is revealed.")
+                    "far); its y will be added when it is revealed." + self._fit_status(m))
 
     def _add_past_case(self, k: str, name: str, values: dict, query: int) -> str:
         """Add past query `query` (1-based, resolved) to a model, with its y at once. Own
@@ -1052,7 +1069,7 @@ class ConsensusAPI:
             m["rows"] = [r for r in m["rows"] if r.get("_q") != q]
             m["rows"].append({**row, "y": float(self.ys[k][q]), "_q": q})
             return (f"Query {query} added to '{name}' with its y ({len(m['rows'])} cases with y "
-                    "so far).")
+                    "so far)." + self._fit_status(m))
 
     def add_row(self, k: str, name: str, values: dict, y: float) -> str:
         """Add a labelled row whose column values and y the twin gives itself."""
@@ -1081,7 +1098,8 @@ class ConsensusAPI:
             except (TypeError, ValueError):
                 return "Error: y must be a number."
             m["rows"].append({**row, "y": yv})
-            return f"Row added to '{name}' ({len(m['rows'])} cases with y so far)."
+            return (f"Row added to '{name}' ({len(m['rows'])} cases with y so far)."
+                    + self._fit_status(m))
 
     def write_log(self, k: str, text: str) -> str:
         with self.cond:

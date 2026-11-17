@@ -96,3 +96,15 @@ def test_no_solo_is_unchanged():
     api.get_training_data("A", 30)
     assert api.start_queries("A", intro).startswith("You have finished studying (30")
     assert api.phase["A"] == "query"
+
+
+def test_fit_hint_line():
+    """fit_hint (LogBook 2026-11-17): add_case / add_row say how many cases fit_model needs
+    (columns + 3), and nothing when the option is off."""
+    api, _ = make_api()
+    m = {"columns": ["a1", "a2", "b1", "b2"], "rows": [{}] * 5}
+    assert api._fit_status(m) == ""
+    api.fit_hint = True
+    assert api._fit_status(m) == " fit_model can fit this model once it has 7 cases with y (2 more)."
+    m["rows"] = [{}] * 7
+    assert api._fit_status(m) == " fit_model can fit this model now."
