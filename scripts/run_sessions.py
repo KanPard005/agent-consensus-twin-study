@@ -63,6 +63,7 @@ def main(argv: list[str] | None = None) -> Path:
     first = cfg.get("first_run", 0)
     for r in range(first, first + cfg["n_runs"]):
         rng = run_rng(seed, r)
+        solo = None
         if isinstance(env, RelatedTargetsEnv):
             # Related targets (LogBook 2026-11-16): each twin studies and is scored on its own
             # target. Same draws as train_twins + env.sample, so c = 1 reproduces the base data.
@@ -71,6 +72,13 @@ def main(argv: list[str] | None = None) -> Path:
             train = {"A": (tx_A, ty_A), "B": (tx_B, ty_B)}
             x_A, x_B, y_A, y_B = env.sample_pair(T, rng)
             y = {"A": y_A, "B": y_B}
+            # Solo queries first (LogBook 2026-11-16): agent.solo_queries = K cases each twin
+            # answers alone before the partner phase. Drawn from their own stream (seed, run,
+            # 1) so training and partner queries are the same for every K (related targets only).
+            K = ag.get("solo_queries", 0)
+            if K:
+                s_A, s_B, sy_A, sy_B = env.sample_pair(K, np.random.default_rng([seed, r, 1]))
+                solo = {"x": {"A": s_A, "B": s_B}, "y": {"A": sy_A, "B": sy_B}}
         else:
             A, B = train_twins(env, cfg["train"], rng)  # same draws as scripts/run.py
             train = {"A": A.training_data(), "B": B.training_data()}
@@ -97,6 +105,7 @@ def main(argv: list[str] | None = None) -> Path:
             history_tools=ag.get("history_tools", False),
             page_size=ag.get("page_size", 25),
             practice=ag.get("practice", False),
+            solo=solo,
             tol=ag["tol"],
             max_attempts=ag["max_attempts"],
             penalty=ag["penalty"],
@@ -114,13 +123,17 @@ def main(argv: list[str] | None = None) -> Path:
             log.info("run %d query %d: agreed %.3f, y %.3f, failed %s, %d messages", r,
                      rec["t"] + 1, rec["agreed"], rec["y"], rec["failed"], len(rec["messages"]))
 
+        def on_solo(k, rec, r=r):
+            with lock, (tr / f"run{r}_solo_{k}.jsonl").open("a") as f:
+                f.write(json.dumps(rec) + "\n")
+
         def on_call(k, rec, r=r):
             with (tr / f"run{r}_calls_{k}.jsonl").open("a") as f:
                 f.write(json.dumps(rec) + "\n")
 
         for k in "AB":
             (tr / f"run{r}_calls_{k}.jsonl").write_text("")
-        api.on_query, api.on_call = on_query, on_call
+        api.on_query, api.on_call, api.on_solo = on_query, on_call, on_solo
         twins = {
             k: TwinSession(
                 k,
@@ -154,6 +167,9 @@ def main(argv: list[str] | None = None) -> Path:
             "errors": {k: tw.error for k, tw in twins.items()},
             "compactions": {k: len(tw.compactions) for k, tw in twins.items()},
             "training_cases": dict(api.n_seen),
+            "solo_queries": api.K,
+            "solo_mse": {k: float(np.nanmean((api.solo_pred[k] - api.solo_y[k]) ** 2))
+                         if api.K else None for k in "AB"},
             "budget": dict(api.budget),
             "long_twin": long,
             "queries_resolved": int(api.resolved.sum()),

@@ -223,6 +223,27 @@ Your features are {own}; your partner's features are {other_feats}: your feature
 but you both predict the same quantity y for each case. Your partner may have information that \
 you do not."""
 
+# Solo queries first (LogBook 2026-11-16, Kanad's idea): with `solo` cases, start_queries opens a
+# phase of K queries the twin answers alone (features, prediction, its own true y revealed);
+# after the K-th, the partner phase starts with the usual start_queries text, whose first
+# sentence becomes OPENING_SOLO. Nothing says how to use the partner.
+SOLO_INTRO = """\
+You have finished studying ({n_train} labelled cases). Next you will answer {K} queries on your \
+own. For each one:
+- next_query gives you the features of the case;
+- submit_prediction records your estimate of y; then the true y is revealed to you.
+
+At any time during these queries you can also train new models with the regression API (past \
+queries, with their revealed y, count as cases with known y) and use your model instances{log}. \
+After the {K} queries you will get further instructions. You can make at most {cap} tool calls \
+per query. Call next_query to begin."""
+
+OPENING_SOLO = """\
+You have finished studying ({n_train} labelled cases) and answering {K} queries on your own. \
+From now on you have a partner, agent {other}: another instance of the same AI model as you, \
+with the same instructions, which also studied its own cases and answered {K} queries on its \
+own."""
+
 START_QUERIES_CLEAR = """\
 {opening} {partner_par}
 
@@ -423,7 +444,24 @@ class ConsensusAPI:
         history_tools: bool = False,
         page_size: int = 25,
         practice: bool = False,
+        solo: dict | None = None,
     ) -> None:
+        # Solo queries first (LogBook 2026-11-16): `solo = {"x": {"A": X_A, "B": X_B}, "y": y or
+        # {"A": y_A, "B": y_B}}` gives K cases each twin answers alone after training and before
+        # the partner phase; their y (the twin's own target) is revealed after each prediction
+        # and they count as known cases in regress. Partner-phase queries are numbered 1..T.
+        self.solo = solo
+        self.K = 0 if solo is None else len(solo["x"]["A"])
+        if solo is not None:
+            sy = solo["y"]
+            self.solo_y = ({k: np.asarray(sy[k], float) for k in "AB"} if isinstance(sy, dict)
+                           else {k: np.asarray(sy, float) for k in "AB"})
+            self.solo_x = solo["x"]
+        self.solo_i = {k: -1 for k in "AB"}  # current solo case per twin
+        self.solo_pred = {k: np.full(self.K, np.nan) for k in "AB"}
+        self.solo_pending = {k: {} for k in "AB"}  # {model name: row} of the current solo case
+        self.partner_intro = {k: None for k in "AB"}  # the start_queries text, for after solo
+        self.on_solo = None  # fn(twin, record), called after each solo prediction
         # Training budget vs tool practice (LogBook 2026-11-14): `page_size` is the most labelled
         # cases get_training_data returns per call (a large one serves the whole budget in one
         # call, removing the paging calls a long budget brings); with `practice` start_queries is
@@ -499,13 +537,15 @@ class ConsensusAPI:
     def call(self, k: str, tool: str, args: dict, fn) -> str:
         """Run one tool call for twin k with the per-query cap, and report it."""
         q = self.q[k]
+        solo = self.phase[k] == "solo"
+        key = f"s{self.solo_i[k]}" if solo else q
         with self.cond:
-            n = self.calls[k].get(q, 0) + 1
-            self.calls[k][q] = n
+            n = self.calls[k].get(key, 0) + 1
+            self.calls[k][key] = n
         # submit_prediction and next_query stay open past the cap: a twin at the cap must still
         # be able to finish its query and move on (next_query refuses unresolved queries itself).
-        if (self.phase[k] == "query" and q >= 0 and n > self.cap
-                and tool not in ("submit_prediction", "next_query")):
+        if ((self.phase[k] == "query" and q >= 0 or solo and self.solo_i[k] >= 0)
+                and n > self.cap and tool not in ("submit_prediction", "next_query")):
             res = (
                 f"Tool-call limit for query {q + 1} reached: call submit_prediction now (or "
                 "next_query if the query is resolved)."
@@ -513,8 +553,10 @@ class ConsensusAPI:
         else:
             res = fn()
         if self.on_call is not None:
-            self.on_call(k, {"q": q, "tool": tool, "args": args, "result": res[:3000],
-                             "time": time.time()})
+            rec = {"q": q, "tool": tool, "args": args, "result": res[:3000], "time": time.time()}
+            if solo:  # calls made during the solo phase (q stays -1, as in training)
+                rec["solo"] = self.solo_i[k]
+            self.on_call(k, rec)
         return res
 
     def _known_rows(self, k: str) -> list[dict]:
@@ -523,6 +565,10 @@ class ConsensusAPI:
             {**dict(zip(lab, map(float, x))), "y": float(v)}
             for x, v in zip(self.Xtr[k][: self.n_seen[k]], self.ytr[k][: self.n_seen[k]])
         ]
+        for i in range(self.K):  # solo cases answered (their y is revealed)
+            if not np.isnan(self.solo_pred[k][i]):
+                rows.append({**dict(zip(lab, map(float, self.solo_x[k][i]))),
+                             "y": float(self.solo_y[k][i])})
         for q in range(self.T):
             if self.resolved[q]:
                 rows.append(
@@ -609,6 +655,8 @@ class ConsensusAPI:
                 rows = [r for r in rows if "own_opening" in r]
             current = None
             q = self.q[k]
+            if self._solo_open(k):
+                current = dict(zip(self.labels[k], map(float, self.solo_x[k][self.solo_i[k]])))
             if self.phase[k] == "query" and 0 <= q < self.T and not self.resolved[q]:
                 current = dict(zip(self.labels[k], map(float, self.qx[k][q])))
                 if not np.isnan(self.opening[k][q]):
@@ -630,9 +678,52 @@ class ConsensusAPI:
             if self.practice and not self.practiced[k]:
                 return ("Error: before the queries, build a model on your labelled cases with "
                         "new_model and fit it with fit_model.")
+            if self.K > 0:
+                self.phase[k] = "solo"
+                self.partner_intro[k] = intro
+                self.cond.notify_all()
+                return self.solo_intro_text.format(n_train=self.n_seen[k])
             self.phase[k] = "query"
             self.cond.notify_all()
             return intro.format(n_train=self.n_seen[k])
+
+    # ---- solo phase ----------------------------------------------------------------------------
+    solo_intro_text = ""  # set by TwinSession (`solo_intro`)
+
+    def _solo_open(self, k: str) -> bool:
+        """Twin k is in the solo phase with a current case not yet predicted."""
+        i = self.solo_i[k]
+        return self.phase[k] == "solo" and i >= 0 and np.isnan(self.solo_pred[k][i])
+
+    def _solo_next(self, k: str) -> str:
+        i = self.solo_i[k]
+        if i >= 0 and np.isnan(self.solo_pred[k][i]):
+            return f"Error: submit your prediction for query {i + 1} first."
+        i += 1
+        self.solo_i[k] = i
+        feats = ", ".join(f"{lab}={v:.3f}" for lab, v in zip(self.labels[k], self.solo_x[k][i]))
+        return f"Query {i + 1} of {self.K}. Your features: {feats}."
+
+    def _solo_submit(self, k: str, y: float) -> str:
+        if not self._solo_open(k):
+            return "Error: no current query (call next_query)."
+        i = self.solo_i[k]
+        self.solo_pred[k][i] = float(y)
+        yk = float(self.solo_y[k][i])
+        for name, row in self.solo_pending[k].items():
+            if name in self.models[k]:
+                self.models[k][name]["rows"].append({**row, "y": yk, "_solo": i})
+        self.solo_pending[k] = {}
+        if self.on_solo is not None:
+            self.on_solo(k, {"i": i, "x": [float(v) for v in self.solo_x[k][i]],
+                             "pred": float(y), "y": yk, "time": time.time()})
+        res = f"The true y was {yk:.3f}; your squared error {(float(y) - yk) ** 2:.3f}."
+        if i < self.K - 1:
+            return res + " Call next_query for the next case."
+        self.phase[k] = "query"
+        self.cond.notify_all()
+        return (res + f" That was the last of your {self.K} queries on your own.\n\n"
+                + self.partner_intro[k].format(n_train=self.n_seen[k]))
 
     def next_query(self, k: str) -> str:
         with self.cond:
@@ -640,6 +731,8 @@ class ConsensusAPI:
                 return "Error: call start_queries first."
             if self.phase[k] == "done":
                 return "The run is over. Stop."
+            if self.phase[k] == "solo":
+                return self._solo_next(k)
             if self.q[k] >= 0 and not self.resolved[self.q[k]]:
                 return f"Error: query {self.q[k] + 1} is not resolved yet (reach a consensus first)."
             nq = self.q[k] + 1
@@ -656,6 +749,9 @@ class ConsensusAPI:
             return f"Query {nq + 1} of {self.T}. Your features: {feats}."
 
     def _in_query(self, k: str) -> str | None:
+        if self.phase[k] == "solo":
+            return ("Error: while you answer queries on your own, use next_query and "
+                    "submit_prediction.")
         if self.phase[k] != "query" or self.q[k] < 0:
             return "Error: no current query (call next_query)."
         if self.resolved[self.q[k]]:
@@ -733,6 +829,8 @@ class ConsensusAPI:
     def submit_prediction(self, k: str, y: float, own_error: float | None = None,
                           partner_error: float | None = None) -> str:
         with self.cond:
+            if self.phase[k] == "solo":
+                return self._solo_submit(k, y)
             if err := self._in_query(k):
                 return err
             q, o = self.q[k], self.other(k)
@@ -834,6 +932,8 @@ class ConsensusAPI:
     def _auto_values(self, k: str, q: int) -> dict:
         """Values the API fills in for twin k at query q: its features, its opening, and the
         partner's opening once both have opened (as read_messages would show it)."""
+        if self.phase[k] == "solo":  # the current solo case: own features only
+            return dict(zip(self.labels[k], map(float, self.solo_x[k][max(self.solo_i[k], 0)])))
         vals = dict(zip(self.labels[k], map(float, self.qx[k][q])))
         if not np.isnan(self.opening[k][q]):
             vals["own_opening"] = float(self.opening[k][q])
@@ -909,9 +1009,21 @@ class ConsensusAPI:
         return row, ""
 
     def add_case(self, k: str, name: str, values: dict, query: int | None = None) -> str:
-        if query is not None and self.history_tools:
+        if query is not None and self.history_tools and self.phase[k] != "solo":
             return self._add_past_case(k, name, values, int(query))
         with self.cond:
+            if self.phase[k] == "solo":
+                if query is not None:
+                    return "Error: past queries can be added during the queries with your partner."
+                if not self._solo_open(k):
+                    return "Error: no current query (call next_query)."
+                row, err = self._row(k, name, values or {})
+                if row is None:
+                    return err
+                self.solo_pending[k][name] = row
+                return (f"Case {self.solo_i[k] + 1} added to '{name}' "
+                        f"({len(self.models[k][name]['rows'])} cases with y so far); its y will be "
+                        "added when it is revealed.")
             if err := self._in_query(k):
                 return err
             row, err = self._row(k, name, values or {})
@@ -989,7 +1101,8 @@ class ConsensusAPI:
             if m is None:
                 return f"Error: no model named '{name}' (create it with new_model)."
             current = None
-            if self.phase[k] == "query" and 0 <= self.q[k] < self.T and not self.resolved[self.q[k]]:
+            if self._solo_open(k) or (self.phase[k] == "query" and 0 <= self.q[k] < self.T
+                                      and not self.resolved[self.q[k]]):
                 row, _ = self._row(k, name, values or {})
                 current = row
             elif self.phase[k] == "train":
@@ -1148,6 +1261,16 @@ def build_tools(api: ConsensusAPI, k: str, intro: str, model_tools: bool = False
     return server, [f"mcp__data__{t.name}" for t in tools], tools
 
 
+def solo_intro(api: ConsensusAPI, prompt_style: str) -> str:
+    """The start_queries result when the twin first answers api.K queries alone (the partner
+    phase text comes after the K-th prediction). `{n_train}` is filled in at the call."""
+    if prompt_style not in ("clear", "clear_models", "clear_history"):
+        raise ValueError("solo queries need a clear prompt style")
+    tools = (" (new_model, add_case, fit_model, add_row) and your log (write_log, read_log)"
+             if prompt_style == "clear_history" else " (new_model, add_case, fit_model)")
+    return SOLO_INTRO.format(n_train="{n_train}", K=api.K, cap=api.cap, log=tools)
+
+
 def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bool,
                same_y: bool = False, model_tools: bool = False,
                prompt_style: str = "standard", partner_target: str = "same",
@@ -1175,7 +1298,8 @@ def intro_text(api: ConsensusAPI, k: str, structure_hint: bool, partner_info: bo
         partner = {"same": PARTNER_CLEAR, "untold": PARTNER_UNTOLD,
                    "told": PARTNER_TOLD}[partner_target]
         return START_QUERIES_CLEAR.format(
-            opening=OPENING_CLEAR.format(n_train="{n_train}", other=api.other(k)),
+            opening=(OPENING_SOLO.format(n_train="{n_train}", K=api.K, other=api.other(k))
+                     if api.K else OPENING_CLEAR.format(n_train="{n_train}", other=api.other(k))),
             partner_par=partner.format(own=", ".join(labels), other_feats=", ".join(other)),
             T=api.T, rule_par=rule, cap=api.cap,
             query_api=QUERY_API.format(reveal=reveal) if query_api else "",
@@ -1245,6 +1369,8 @@ class TwinSession:
         self.prompt_style = prompt_style
         self.intro = intro_text(api, name, structure_hint, partner_info, same_y, model_tools,
                                 prompt_style, partner_target, query_api, talk_free)
+        if api.K:
+            api.solo_intro_text = solo_intro(api, prompt_style)
         self.model_tools = model_tools
         labels = api.labels[name]
         self.system = SYSTEM_TRAIN.format(
