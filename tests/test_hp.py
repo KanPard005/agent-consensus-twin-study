@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from consensus import hp_protocol
-from consensus.hp_clues import CLUE_BANK
-from consensus.hp_data import HiddenProfileGenerator
+from consensus.hp_clues import CLUE_BANK, EXCLUSIVE_PAIRS
+from consensus.hp_data import HiddenProfileGenerator, has_contradiction
 from consensus.hp_protocol import HPDiscussion, SoloFull
 from consensus.llm_backends import StubBackend
 
@@ -17,6 +17,19 @@ def test_keywords_identify_one_clue():
         for j, (_, text, _) in enumerate(CLUE_BANK):
             if i != j:
                 assert not any(k in text.lower() for k in kws), (kws, text)
+
+
+def test_exclusive_pairs_are_distinct_clues():
+    assert len(EXCLUSIVE_PAIRS) == 16
+    assert all(len(p) == 2 for p in EXCLUSIVE_PAIRS)
+
+
+@pytest.mark.parametrize("p_shared", [0.25, 0.5])
+def test_no_contradictory_clues_on_one_site(p_shared):
+    gen = HiddenProfileGenerator(p_shared=p_shared)
+    rng = np.random.default_rng(1)
+    cases = gen.sample_set(rng, 40, 20)
+    assert not any(has_contradiction(c) for c in cases)
 
 
 @pytest.mark.parametrize("p_shared", [0.25, 0.5, 0.75])

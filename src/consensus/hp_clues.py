@@ -177,3 +177,48 @@ CLUE_BANK: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     ),
     (-1, "The area is mostly offices that empty out in August.", ("august",)),
 )
+
+
+def _clue_index(snippet: str) -> int:
+    """Index of the one clue whose text contains `snippet` (fails loudly if not unique)."""
+    hits = [i for i, (_, text, _) in enumerate(CLUE_BANK) if snippet in text]
+    if len(hits) != 1:
+        raise ValueError(f"clue snippet {snippet!r} matches {len(hits)} clues")
+    return hits[0]
+
+
+# Pairs of clues that contradict each other when they describe the same site (LogBook
+# 2026-11-10: 21 of 60 café cases had such a pair, e.g. a 30-seat terrace and a pavement too
+# narrow for outdoor seating, and twins argued about which fact was true). The generator never
+# puts both clues of a pair on one site; on different sites they are fine.
+_EXCLUSIVE_SNIPPETS: tuple[tuple[str, str], ...] = (
+    # rent level
+    ("10% below", "40% above"),
+    # parking
+    ("plenty of free parking", "few paid parking"),
+    # outdoor seating
+    ("sunny terrace", "pavement outside is narrow"),
+    ("pedestrian plaza", "pavement outside is narrow"),
+    # light
+    ("sunny terrace", "faces north"),
+    # public transport
+    ("train station", "Public transport is poor"),
+    ("bus stop", "Public transport is poor"),
+    # competition nearby
+    ("more than a kilometre", "two doors down"),
+    ("more than a kilometre", "chain coffee shop"),
+    ("more than a kilometre", "bakery"),
+    # street works vs plaza in front
+    ("tram-line construction", "pedestrian plaza"),
+    # weekend trade
+    ("empty after 6pm and at weekends", "farmers' market"),
+    # street frontage
+    ("second floor", "big windows"),
+    ("second floor", "entrances on two streets"),
+    ("second floor", "sunny terrace"),
+    ("second floor", "pedestrian plaza"),
+)
+
+EXCLUSIVE_PAIRS: frozenset[frozenset[int]] = frozenset(
+    frozenset((_clue_index(a), _clue_index(b))) for a, b in _EXCLUSIVE_SNIPPETS
+)
