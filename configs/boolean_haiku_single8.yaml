@@ -1,0 +1,31 @@
+# Single-agent reference for the 8-feature task (configs/boolean_haiku_mixed8.yaml): one agent
+# sees x1..x8 and answers pair r's study cases, solo cases and partner cases alone.
+# Launch: scripts/launch_boolean.py --config configs/boolean_haiku_single8.yaml
+#         --experiment boolean_haiku_single8 --pairs 10
+experiment: boolean_haiku_single8
+seed: 0
+n_runs: 1
+single: true
+
+env:
+  task: boolean
+  clauses: [[0, 1, 2, 3], [4, 5, 6, 7]]
+  views: {A: [0, 1, 2, 3, 4, 5, 6, 7], B: [0, 1, 2, 3, 4, 5, 6, 7]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.7071067811865476
+  rho: 0.9
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [x1, x2, x3, x4, x5, x6, x7, x8]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10
