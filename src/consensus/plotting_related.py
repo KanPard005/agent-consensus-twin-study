@@ -189,7 +189,8 @@ def plot_rig(stats: dict, arms: list[str], windows: list[str], path: Path) -> No
     x = np.arange(len(windows))
     for i, arm in enumerate(arms):
         col = MUTED if arm == "control" else CAT[(i - 1) % len(CAT)]
-        label = arm.replace("llm_haiku_rig_", "").replace("low", "−").replace("high", "+")
+        label = ("control rerun" if arm.endswith("_rerun") else
+                 arm.replace("llm_haiku_rig_", "").replace("low", "−").replace("high", "+"))
         for ax, (key, _) in zip(axes, keys):
             ax.plot(x, stats[arm][key], color=col, marker="o", ms=4, label=label,
                     lw=2.0 if arm == "control" else 1.4)
