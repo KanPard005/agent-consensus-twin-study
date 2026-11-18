@@ -132,6 +132,23 @@ def summarize(part: list[dict], solo: list[dict]) -> dict:
     # so it matches D_other there exactly when D_other = 1: the bar to beat for "uses the partner".
     out["solo_rule_eq_d_other_d_own1"] = float(np.mean(d_oth[d_own == 1] == 1))
     block = t // 10
+    # Split-agnostic deference (needed for the mixed split, where clause values no longer say
+    # who knows what): "partner needed" = queries where the Bayes label from the twin's own
+    # features differs from the Bayes label from all features. There the final label should
+    # follow the joint label; elsewhere the partner should not change a correct own call.
+    l_solo, l_joint = (ps > 0.5) * 1.0, (pj > 0.5) * 1.0
+    need = l_solo != l_joint
+    out["partner_needed"] = {
+        "share": float(need.mean()),
+        "open_eq_joint": float(np.mean(lo[need] == l_joint[need])),
+        "final_eq_joint": float(np.mean(lf[need] == l_joint[need])),
+        "final_eq_joint_elsewhere": float(np.mean(lf[~need] == l_joint[~need])),
+        "acc_final": float(np.mean(lf[need] == y[need])),
+        "acc_final_elsewhere": float(np.mean(lf[~need] == y[~need])),
+    }
+    out["final_eq_joint_by_block_needed"] = {
+        int(b): float(np.mean(lf[s] == l_joint[s]))
+        for b in np.unique(block) for s in [(block == b) & need] if s.any()}
     out["final_acc_by_block"] = {int(b): float(np.mean(lf[block == b] == y[block == b]))
                                  for b in np.unique(block)}
     out["eq_d_other_by_block_d_own1"] = {

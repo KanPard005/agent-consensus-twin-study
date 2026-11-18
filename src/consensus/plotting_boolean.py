@@ -15,11 +15,15 @@ def plot_boolean_summary(s: dict):
     share of finals whose label equals the partner's clause (1 = the joint rule), by block of 10
     partner queries.
 
+    Third: on partner queries where the Bayes label from the twin's own features differs from the
+    Bayes label from all features, the share of finals equal to the all-features label, by block
+    (split-agnostic; the measure used for the mixed split).
+
     Returns
     -------
     (fig, axes)
     """
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.6))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 3.6))
     ax = axes[0]
     names = ["solo phase", "opening", "final"]
     vals = [s["solo"]["acc"], s["opening"]["acc"], s["final"]["acc"]]
@@ -42,6 +46,16 @@ def plot_boolean_summary(s: dict):
     ax.set_xlabel("partner query")
     ax.set_ylabel("final label = partner's clause")
     ax.set_title("own clause = 1 (answer is the partner's)")
+    ax = axes[2]
+    blocks = s.get("final_eq_joint_by_block_needed", {})
+    ax.plot([10 * int(b) + 5 for b in blocks], list(blocks.values()), marker="o", c="#1f4fbf")
+    ax.axhline(0.0, ls="--", c="k", lw=1, label="Bayes, own features")
+    ax.axhline(1.0, ls=":", c="k", lw=1, label="Bayes, all features")
+    ax.legend(loc="center right", fontsize=8, frameon=False)
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_xlabel("partner query")
+    ax.set_ylabel("final label = all-features Bayes label")
+    ax.set_title("queries where own-features Bayes label is wrong-side")
     for a in axes:
         a.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
