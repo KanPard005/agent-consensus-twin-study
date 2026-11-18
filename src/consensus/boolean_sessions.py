@@ -110,6 +110,34 @@ values you give for other columns (such as features your partner sends you);
 - make use of your partner's features in any way you want.
 You can make at most {cap} tool calls per query. Call next_query to begin."""
 
+# Single-agent baseline (Kanad, 2026-11-18): one agent sees every feature and goes through the
+# same three phases alone: the study cases, the first K1 queries, then the remaining queries (the
+# cases the pairs answered together), announced the same way the partner phase is but with no
+# partner. Nothing else in the prompts changes.
+SINGLE_INTRO = """\
+You have finished studying ({n_train} labelled cases). Next you will answer {K1} queries \
+(queries 1 to {K1}). For each one:
+- next_query gives you the features of the case;
+- submit_prediction(p, label) records your probability p that y = 1 and the label (0 or 1) you \
+predict; then the true y is revealed to you.
+You are scored on each query by {scoring}.
+
+At any time during these queries you can also use the data API (add_case can add the current or a \
+past query, with its revealed y, to any of your datasets). After the {K1} queries you will get \
+further instructions. You can make at most {cap} tool calls per query. Call next_query to begin."""
+
+SINGLE_BREAK = """\
+That was the last of the first {K1} queries.
+
+There are {T} more queries (queries {first} to {last}). They work in the same way: next_query \
+gives you the features of the case, and submit_prediction(p, label) records your probability that \
+y = 1 and your label; then the true y is revealed to you. You are scored on each query in the same \
+way. At any time you can also use the data API. You can make at most {cap} tool calls per query. \
+Call next_query to continue."""
+
+CONTINUE_SINGLE = ("The run is not over yet. Continue working through the tools (next_query, "
+                   "submit_prediction) until a tool result says the run is over.")
+
 CONTINUE = ("The run is not over yet. Continue working through the tools (next_query, "
             "submit_opening, talking with your partner, submit_prediction) until a tool result "
             "says the run is over.")
@@ -218,7 +246,12 @@ class BooleanAPI:
 
     def __init__(self, train: dict, solo: dict, queries: dict, y: np.ndarray, labels: dict,
                  page_size: int = 40, cap: int = 40, max_chars: int = 2000,
-                 info: dict | None = None) -> None:
+                 info: dict | None = None, single: int | None = None) -> None:
+        # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
+        # which all run in the solo phase; after query K1 the agent gets `single_break`, after
+        # query K the run is over. Only twin A acts.
+        self.single = single
+        self.single_break = ""  # set by the session (`prompts`)
         self.cond = threading.Condition()
         self.labels = labels
         self.Xtr = {k: np.asarray(train[k][0]) for k in "AB"}
@@ -513,6 +546,8 @@ class BooleanAPI:
                 self.solo_i[k] = i = i + 1
                 feats = ", ".join(f"{lab}={int(v)}" for lab, v in
                                   zip(self.labels[k], self.solo_x[k][i]))
+                if self.single:
+                    return f"Query {i + 1} of {self.K}. Your features: {feats}."
                 return f"Query {i + 1} of {self.K} (on your own). Your features: {feats}."
             if self.q[k] >= 0 and not self.resolved[self.q[k]]:
                 return (f"Error: query {self.number(k)} is not resolved yet (submit your final "
@@ -653,6 +688,12 @@ class BooleanAPI:
         if self.on_solo is not None:
             self.on_solo(k, self.solo_record(k, i))
         res = f"The true y was {y}. {_score(p, label, y, 'Your')}"
+        if self.single and i == self.single - 1 and i < self.K - 1:
+            return res + " " + self.single_break
+        if self.single and i == self.K - 1:
+            self.phase[k] = "done"
+            self.cond.notify_all()
+            return res + " That was the last query: the run is over. Stop."
         if i < self.K - 1:
             return res + " Call next_query for the next case."
         self.phase[k] = "query"
@@ -771,6 +812,9 @@ def build_tools(api: BooleanAPI, k: str):
 
     tools = [get_training_data, start_queries, list_datasets, show_dataset, count, new_dataset,
              add_case, next_query, submit_opening, send_message, read_messages, submit_prediction]
+    if api.single:  # no partner: the partner-phase tools are not offered
+        tools = [t_ for t_ in tools
+                 if t_.name not in ("submit_opening", "send_message", "read_messages")]
     server = create_sdk_mcp_server("data", tools=tools)
     return server, [f"mcp__data__{t.name}" for t in tools], tools
 
@@ -781,6 +825,14 @@ def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
     system = SYSTEM.format(name=k, d=len(labels), names=", ".join(labels),
                            budget=api.budget[k], page=api.page_size, ex1=labels[0],
                            ex2=labels[1 % len(labels)], ex3=labels[-1])
+    if api.single:
+        K1 = api.single
+        return {"system": system,
+                "solo": SINGLE_INTRO.format(n_train="{n_train}", K1=K1, cap=api.cap,
+                                            scoring=SCORING),
+                "break": SINGLE_BREAK.format(K1=K1, T=api.K - K1, first=K1 + 1, last=api.K,
+                                             cap=api.cap),
+                "partner": ""}
     solo = SOLO_INTRO.format(n_train="{n_train}", K=api.K, cap=api.cap, scoring=SCORING)
     partner = PARTNER_INTRO.format(
         n_train="{n_train}", K=api.K, other=api.other(k), own=", ".join(labels),
@@ -805,6 +857,10 @@ class BooleanTwinSession(TwinSession):
         with api.cond:  # both twins write their own entries
             api.solo_intro = {**api.solo_intro, name: p["solo"]}
             api.partner_intro = {**api.partner_intro, name: p["partner"]}
+            if api.single:
+                api.single_break = p["break"]
+        if api.single:
+            self.continue_prompt = CONTINUE_SINGLE
         self._init_run_state(live_dir, run)
 
     @property

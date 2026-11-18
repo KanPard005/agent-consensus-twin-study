@@ -155,3 +155,27 @@ def test_past_query_rules():
     assert "added to training" in api.add_case(k, "training", query=1)
     assert "cannot be given" in api.add_case(k, "training", values={"x1": 1})
     assert "between 0 and 1" in api.submit_prediction(k, 1.5, 1)
+
+
+def test_single_agent_mode():
+    """One agent with all features: K1 queries, a break message, the rest, then the end."""
+    env = make_env()
+    rng = np.random.default_rng(3)
+    Xtr, _, ytr = env.sample(4, rng)
+    X, _, y = env.sample(5, rng)
+    labels = ["x1", "x2", "x3", "x4", "x5", "x6"]
+    api = BooleanAPI({k: (Xtr, ytr) for k in "AB"}, {"x": {k: X for k in "AB"}, "y": y},
+                     {k: np.zeros((0, 6), int) for k in "AB"}, np.zeros(0, int),
+                     {k: labels for k in "AB"}, page_size=4, single=2)
+    pr = prompts(api, "A")
+    api.solo_intro["A"], api.single_break = pr["solo"], pr["break"]
+    assert "partner" not in (pr["solo"] + pr["break"] + pr["system"]).lower()
+    api.get_training_data("A", 4)
+    assert "queries 1 to 2" in api.start_queries("A")
+    out = []
+    for _ in range(5):
+        assert "on your own" not in api.next_query("A")
+        out.append(api.submit_prediction("A", 0.5, 1))
+    assert "queries 3 to 5" in out[1]
+    assert "run is over" in out[-1] and api.done("A")
+    assert not np.isnan(api.solo_pred["A"][:, 0]).any()

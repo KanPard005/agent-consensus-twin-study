@@ -49,6 +49,41 @@ def query_info(env: BooleanCopulaEnv, X: np.ndarray) -> dict:
     }
 
 
+def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
+             queries: tuple) -> BooleanAPI:
+    """The two-twin API: each twin sees its own view of the same cases."""
+    ag = cfg["agent"]
+    (Xtr, ytr), (Xs, ys), (Xq, yq) = train, solo, queries
+    return BooleanAPI(
+        train={k: (env.view(Xtr, k), ytr) for k in "AB"},
+        solo={"x": {k: env.view(Xs, k) for k in "AB"}, "y": ys},
+        queries={k: env.view(Xq, k) for k in "AB"},
+        y=yq, labels=ag["labels"], page_size=ag["page_size"], cap=ag["cap"],
+        max_chars=ag["max_chars"],
+        info={"solo": query_info(env, Xs), "partner": query_info(env, Xq)},
+    )
+
+
+def single_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
+               queries: tuple) -> BooleanAPI:
+    """Single-agent baseline (`single: true`): agent A sees every feature of the same study
+    cases, then answers the K solo cases followed by the T cases the pairs answered together,
+    all in one solo phase with a break after the first K (see consensus.boolean_sessions)."""
+    ag = cfg["agent"]
+    (Xtr, ytr), (Xs, ys), (Xq, yq) = train, solo, queries
+    if sorted(env.views["A"]) != list(range(env.n)):
+        raise ValueError("single: true needs env.views.A to be every feature")
+    X, y = np.concatenate([Xs, Xq]), np.concatenate([ys, yq])
+    Xa = env.view(X, "A")
+    return BooleanAPI(
+        train={k: (env.view(Xtr, "A"), ytr) for k in "AB"},  # B is never run
+        solo={"x": {k: Xa for k in "AB"}, "y": y},
+        queries={k: np.zeros((0, Xa.shape[1]), int) for k in "AB"}, y=np.zeros(0, int),
+        labels={k: ag["labels"]["A"] for k in "AB"}, page_size=ag["page_size"], cap=ag["cap"],
+        max_chars=ag["max_chars"], info={"solo": query_info(env, X)}, single=len(ys),
+    )
+
+
 def summarize(api: BooleanAPI) -> dict:
     """Accuracy and mean log loss of the solo predictions, openings and finals per twin."""
     out = {}
@@ -60,6 +95,11 @@ def summarize(api: BooleanAPI) -> dict:
         for name, arr in (("opening", api.opening[k]), ("final", api.final[k])):
             ok = res & ~np.isnan(arr[:, 0])
             out[f"{name}_{k}"] = _scores(arr[ok], api.y[ok])
+    if api.single:  # the single agent's two blocks: the solo cases, then the pairs' cases
+        s, K1 = api.solo_pred["A"], api.single
+        for name, sl in (("single_first", slice(0, K1)), ("single_rest", slice(K1, api.K))):
+            ok = ~np.isnan(s[sl, 0])
+            out[name] = _scores(s[sl][ok], api.solo_y[sl][ok])
     return out
 
 
@@ -94,17 +134,10 @@ def main(argv: list[str] | None = None) -> Path:
         Xtr, _, ytr = env.sample(cfg["n_train"], np.random.default_rng([seed, r, 0]))
         Xs, _, ys = env.sample(cfg["K"], np.random.default_rng([seed, r, 1]))
         Xq, _, yq = env.sample(cfg["T"], np.random.default_rng([seed, r, 2]))
-        api = BooleanAPI(
-            train={k: (env.view(Xtr, k), ytr) for k in "AB"},
-            solo={"x": {k: env.view(Xs, k) for k in "AB"}, "y": ys},
-            queries={k: env.view(Xq, k) for k in "AB"},
-            y=yq,
-            labels=ag["labels"],
-            page_size=ag["page_size"],
-            cap=ag["cap"],
-            max_chars=ag["max_chars"],
-            info={"solo": query_info(env, Xs), "partner": query_info(env, Xq)},
-        )
+        if cfg.get("single"):
+            api = single_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq))
+        else:
+            api = pair_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq))
         tr = run_dir / "transcripts"
         tr.mkdir(parents=True, exist_ok=True)
         lock = threading.Lock()
@@ -126,7 +159,7 @@ def main(argv: list[str] | None = None) -> Path:
         twins = {k: BooleanTwinSession(k, api, model=ag["model"], effort=ag["effort"],
                                        max_budget_usd=ag["max_budget_usd"],
                                        max_continues=ag["max_continues"], live_dir=tr, run=r)
-                 for k in "AB"}
+                 for k in ("A" if cfg.get("single") else "AB")}
         run_pair(api, twins)
         summary[f"run{r}"] = {
             "cost_usd": sum(tw.cost_usd for tw in twins.values()),
