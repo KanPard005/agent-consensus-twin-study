@@ -1491,8 +1491,7 @@ class TwinSession:
             ToolUseBlock,
         )
 
-        server, allowed, _ = build_tools(self.api, self.name, self.intro, self.model_tools,
-                                         self.prompt_style)
+        server, allowed = self._tools()
 
         async def pre_compact(inp, tool_use_id, ctx):
             ev = {"q": self.api.q[self.name], "time": time.time(),
@@ -1512,14 +1511,11 @@ class TwinSession:
             effort=self.effort,
             max_budget_usd=self.max_budget_usd,
             cwd=tempfile.mkdtemp(prefix=f"twin{self.name}_"),
-            # waiting for the partner can take minutes; a large training page needs a larger
-            # tool-output limit than the default
-            env={"MCP_TOOL_TIMEOUT": "3600000",
-                 **({"MAX_MCP_OUTPUT_TOKENS": "100000"} if self.api.page_size > 25 else {})},
+            # waiting for the partner can take minutes
+            env={"MCP_TOOL_TIMEOUT": "3600000", **self._extra_env()},
             hooks={"PreCompact": [HookMatcher(hooks=[pre_compact])]},
         )
-        prompt = ("Begin." if self.api.no_training
-                  else "Begin. You are in the training phase.")
+        prompt = self._first_prompt()
         async with ClaudeSDKClient(options=options) as client:
             for i in range(self.max_continues + 1):
                 await client.query(prompt)
@@ -1559,12 +1555,28 @@ class TwinSession:
                                                  == "error_max_budget_usd"):
                     break
                 self.n_continues = i + 1
-                prompt = (
-                    "The run is not over yet. Continue working through the tools (next_query, "
-                    "submit_opening, talking with your partner, submit_prediction) until a tool "
-                    "result says the run is over."
-                )
+                prompt = self._continue_prompt()
                 self.write_status()
+
+    # ---- task-specific parts of the session (overridden by consensus.hp_sessions) ---------------
+    def _tools(self) -> tuple:
+        server, allowed, _ = build_tools(self.api, self.name, self.intro, self.model_tools,
+                                         self.prompt_style)
+        return server, allowed
+
+    def _extra_env(self) -> dict:
+        # a large training page needs a larger tool-output limit than the default
+        return {"MAX_MCP_OUTPUT_TOKENS": "100000"} if self.api.page_size > 25 else {}
+
+    def _first_prompt(self) -> str:
+        return "Begin." if self.api.no_training else "Begin. You are in the training phase."
+
+    def _continue_prompt(self) -> str:
+        return (
+            "The run is not over yet. Continue working through the tools (next_query, "
+            "submit_opening, talking with your partner, submit_prediction) until a tool "
+            "result says the run is over."
+        )
 
 
 def run_pair(api: ConsensusAPI, twins: dict[str, TwinSession]) -> None:

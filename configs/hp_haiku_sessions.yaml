@@ -1,0 +1,28 @@
+# Café hidden-profile task with twins as live Claude Agent SDK sessions (LogBook 2026-11-18;
+# `consensus.hp_sessions`, `scripts/run_hp_sessions.py`). One session per twin for all cases;
+# per case: next_case, submit_opening (site probabilities), free talk (send_message /
+# read_messages, as much as they choose), submit_final; team = argmax of the average final.
+# Same seed and case generator as configs/hp_haiku.yaml (run H1 / F1 there with the same seed
+# for the paired references). Cases from commit 1884483 on have no contradictory clue pairs.
+experiment: hp_haiku_sessions
+seed: 0
+n_runs: 3
+jobs: 3
+
+cases:
+  n_sites: 3
+  clues_per_site: 6
+  p_shared: 0.5
+  min_margin: 2.0
+  n_hidden: 15
+  n_control: 5
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  tell_split: true
+  tell_twin: true
+  max_chars: 2000
+  cap: 25
+  max_budget_usd: 3.0
+  max_continues: 10
