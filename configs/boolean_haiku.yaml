@@ -1,0 +1,34 @@
+# Boolean task, first run (LogBook note 2026-11-18, "Brainstorming: boolean experiments"):
+# y = (x1 or x2 or x3) and (x4 or x5 or x6), flipped with probability 1 - rho; A sees x1..x3,
+# B sees x4..x6 (the clean split). Gaussian-copula features: correlation r_within inside a clause,
+# r_cross across; thresholds calibrated so P(clause = 1) = p_clause = sqrt(0.5), hence P(pi = 1) = 0.5.
+# Phases: study n_train labelled cases (no fitting tool: datasets and counts only), K solo queries,
+# T partner queries with free talk; each twin gives P(y = 1) and a label, scored on its own final.
+# Bayes references (env.json): solo accuracy ~0.735, joint 0.90.
+# Launch: scripts/launch_boolean.py --pairs 10
+experiment: boolean_haiku
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1, 2], [3, 4, 5]]
+  views: {A: [0, 1, 2], B: [3, 4, 5]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.7071067811865476
+  rho: 0.9
+
+n_train: 40   # labelled study cases per twin
+K: 20         # solo queries
+T: 40         # partner queries
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [x1, x2, x3], B: [x4, x5, x6]}
+  page_size: 40
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10

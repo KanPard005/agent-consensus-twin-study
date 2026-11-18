@@ -1422,6 +1422,33 @@ class TwinSession:
                 page=api.page_size,
                 history_api=HISTORY_API if prompt_style == "clear_history" else "",
                 log_api=LOG_API if prompt_style == "clear_history" else "")
+        self._init_run_state(live_dir, run)
+
+    # Prompts of the session loop; subclasses for other tasks (consensus.boolean_sessions)
+    # override them together with `tools`.
+    continue_prompt = (
+        "The run is not over yet. Continue working through the tools (next_query, "
+        "submit_opening, talking with your partner, submit_prediction) until a tool "
+        "result says the run is over."
+    )
+
+    @property
+    def first_prompt(self) -> str:
+        return "Begin." if self.api.no_training else "Begin. You are in the training phase."
+
+    def tools(self):
+        """(MCP server, allowed tool names, tool objects) for this twin."""
+        return build_tools(self.api, self.name, self.intro, self.model_tools, self.prompt_style)
+
+    @property
+    def tool_env(self) -> dict:
+        """Environment of the agent process: waiting for the partner can take minutes; a large
+        training page needs a larger tool-output limit than the default."""
+        return {"MCP_TOOL_TIMEOUT": "3600000",
+                **({"MAX_MCP_OUTPUT_TOKENS": "100000"} if self.api.page_size > 25 else {})}
+
+    def _init_run_state(self, live_dir: str | Path | None, run: int) -> None:
+        """Counters and live files shared by every kind of twin session."""
         self.live = Path(live_dir) if live_dir is not None else None
         self.run_id = run
         self.cost_usd = 0.0
@@ -1491,8 +1518,7 @@ class TwinSession:
             ToolUseBlock,
         )
 
-        server, allowed, _ = build_tools(self.api, self.name, self.intro, self.model_tools,
-                                         self.prompt_style)
+        server, allowed, _ = self.tools()
 
         async def pre_compact(inp, tool_use_id, ctx):
             ev = {"q": self.api.q[self.name], "time": time.time(),
@@ -1512,14 +1538,10 @@ class TwinSession:
             effort=self.effort,
             max_budget_usd=self.max_budget_usd,
             cwd=tempfile.mkdtemp(prefix=f"twin{self.name}_"),
-            # waiting for the partner can take minutes; a large training page needs a larger
-            # tool-output limit than the default
-            env={"MCP_TOOL_TIMEOUT": "3600000",
-                 **({"MAX_MCP_OUTPUT_TOKENS": "100000"} if self.api.page_size > 25 else {})},
+            env=self.tool_env,
             hooks={"PreCompact": [HookMatcher(hooks=[pre_compact])]},
         )
-        prompt = ("Begin." if self.api.no_training
-                  else "Begin. You are in the training phase.")
+        prompt = self.first_prompt
         async with ClaudeSDKClient(options=options) as client:
             for i in range(self.max_continues + 1):
                 await client.query(prompt)
@@ -1559,11 +1581,7 @@ class TwinSession:
                                                  == "error_max_budget_usd"):
                     break
                 self.n_continues = i + 1
-                prompt = (
-                    "The run is not over yet. Continue working through the tools (next_query, "
-                    "submit_opening, talking with your partner, submit_prediction) until a tool "
-                    "result says the run is over."
-                )
+                prompt = self.continue_prompt
                 self.write_status()
 
 
