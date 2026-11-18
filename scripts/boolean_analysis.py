@@ -128,6 +128,9 @@ def summarize(part: list[dict], solo: list[dict]) -> dict:
             "mean_p_final": float(np.nanmean(col(part, "p_final")[s])),
             "final_label_eq_d_other": float(np.mean(lf[s] == d_oth[s])),
         }
+    # The own-features Bayes rule says 1 whenever D_own = 1 (independent clauses, p_clause > 0.5),
+    # so it matches D_other there exactly when D_other = 1: the bar to beat for "uses the partner".
+    out["solo_rule_eq_d_other_d_own1"] = float(np.mean(d_oth[d_own == 1] == 1))
     block = t // 10
     out["final_acc_by_block"] = {int(b): float(np.mean(lf[block == b] == y[block == b]))
                                  for b in np.unique(block)}
