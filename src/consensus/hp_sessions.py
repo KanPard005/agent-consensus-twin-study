@@ -299,7 +299,8 @@ class HPSessionAPI:
 
 
 def build_hp_tools(api: HPSessionAPI, k: str):
-    """In-process MCP server with the case tools for twin k, and the allowed tool names."""
+    """In-process MCP server with the case tools for twin k, and the allowed tool names (the
+    server is registered as "data" by TwinSession._main, hence the mcp__data__ prefix)."""
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     obj = {"type": "object", "additionalProperties": False}
@@ -339,8 +340,8 @@ def build_hp_tools(api: HPSessionAPI, k: str):
         return await run("submit_final", args, lambda: api.submit_final(k, args))
 
     tools = [next_case, submit_opening, send_message, read_messages, submit_final]
-    server = create_sdk_mcp_server("cases", tools=tools)
-    allowed = [f"mcp__cases__{t.name}" for t in tools]
+    server = create_sdk_mcp_server("data", tools=tools)
+    allowed = [f"mcp__data__{t.name}" for t in tools]
     return server, allowed
 
 

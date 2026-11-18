@@ -131,3 +131,14 @@ def test_system_prompt_neutral_and_complete():
     for word in ("should share", "unshared", "hidden profile", "pool"):
         assert word not in s.lower()
     assert "{" not in s and SYSTEM_HP
+
+
+def test_allowed_tools_match_server_key():
+    # TwinSession._main registers the server as "data"; allowed names must use that prefix.
+    from consensus.hp_sessions import build_hp_tools
+
+    _, allowed = build_hp_tools(HPSessionAPI(cases()), "A")
+    assert sorted(allowed) == sorted(
+        f"mcp__data__{n}"
+        for n in ("next_case", "submit_opening", "send_message", "read_messages", "submit_final")
+    )
