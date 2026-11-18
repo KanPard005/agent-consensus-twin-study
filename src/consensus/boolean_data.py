@@ -15,6 +15,13 @@ OR: D_k = 1 iff max_{i in k} Z_i > t_k, so t_k is the (1 - p_clause) quantile of
 Holding p_clause fixed while r_within / r_cross vary keeps the base rate of Y fixed (note
 variation 4). Calibration and the Bayes references use one large Monte Carlo sample from a fixed
 seed, so they are the same for every run.
+
+Clause noise (`noise_clause = k`, Kanad 2026-11-18): instead of flipping y, flip only clause k's
+value, y = D_k' AND (AND_{j != k} D_j) with D_k' = D_k xor Bernoulli(eps). Then y = pi exactly
+whenever another clause is 0, and all label noise sits in cases that clause k decides. eps is
+calibrated so that P(Y = pi) = rho overall: a flip of D_k changes y only when every other clause
+is 1, so eps = (1 - rho) / P(all D_j = 1, j != k). The same uniform draw decides the flip as in
+the uniform model, so the features of every case are unchanged.
 """
 
 from __future__ import annotations
@@ -44,6 +51,9 @@ class BooleanCopulaEnv:
         Monte Carlo sample size for the thresholds and the Bayes references.
     mc_seed : int
         Seed of that sample (fixed, so every run shares the same thresholds).
+    noise_clause : int or None
+        None: flip y with probability 1 - rho (uniform label noise). k: flip only clause k's value,
+        with eps calibrated so that P(Y = pi) = rho (see the module docstring).
     """
 
     clauses: list[list[int]]
@@ -54,6 +64,7 @@ class BooleanCopulaEnv:
     rho: float = 0.9
     n_mc: int = 1_000_000
     mc_seed: int = 12345
+    noise_clause: int | None = None
     Sigma: np.ndarray = field(init=False, repr=False)
     t: np.ndarray = field(init=False)  # threshold per feature, shape (n,)
 
@@ -80,6 +91,13 @@ class BooleanCopulaEnv:
         for c in self.clauses:  # D_k = 1 iff max over the clause exceeds t_k
             self.t[c] = np.quantile(Z[:, c].max(axis=1), 1.0 - self.p_clause)
         X = (Z > self.t).astype(np.int8)
+        self.eps = None
+        if self.noise_clause is not None:
+            k = int(self.noise_clause)
+            others = np.delete(self.clause_values(X), k, axis=1).all(axis=1)
+            self.eps = (1.0 - self.rho) / float(others.mean())
+            if not 0.0 <= self.eps < 0.5:
+                raise ValueError(f"clause noise needs eps < 0.5, got {self.eps:.3f}")
         self._bayes_tables(X)
 
     @classmethod
@@ -93,6 +111,7 @@ class BooleanCopulaEnv:
             rho=float(cfg.get("rho", 0.9)),
             n_mc=int(cfg.get("n_mc", 1_000_000)),
             mc_seed=int(cfg.get("mc_seed", 12345)),
+            noise_clause=cfg.get("noise_clause"),
         )
 
     # ---- sampling --------------------------------------------------------------------------
@@ -115,12 +134,16 @@ class BooleanCopulaEnv:
         -------
         X : ndarray of int8, shape (m, n)
         pi : ndarray of int8, shape (m,)   the noiseless label
-        y : ndarray of int8, shape (m,)    pi flipped with probability 1 - rho
+        y : ndarray of int8, shape (m,)    the noisy label (P(y = pi) = rho)
         """
         X = (self._gauss(m, rng) > self.t).astype(np.int8)
         p = self.pi(X)
-        flip = rng.random(m) > self.rho
-        return X, p, np.where(flip, 1 - p, p).astype(np.int8)
+        u = rng.random(m)
+        if self.noise_clause is None:
+            return X, p, np.where(u > self.rho, 1 - p, p).astype(np.int8)
+        D = self.clause_values(X)
+        D[:, self.noise_clause] ^= (u < self.eps).astype(np.int8)
+        return X, p, D.all(axis=1).astype(np.int8)
 
     def view(self, X: np.ndarray, k: str) -> np.ndarray:
         """The columns twin k sees, shape (m, |S_k|)."""
@@ -128,34 +151,39 @@ class BooleanCopulaEnv:
 
     # ---- Bayes references --------------------------------------------------------------------
     def _bayes_tables(self, X: np.ndarray) -> None:
-        """P(pi = 1 | x_S) for each twin's view S, from the Monte Carlo sample X.
+        """P(Y = 1 | x_S) for each twin's view S: the Monte Carlo mean of the exact P(Y = 1 | x)
+        (`p_joint`) over the cases with pattern x_S.
 
         Stored as {pattern tuple: probability}; a pattern with no Monte Carlo mass gets the
-        marginal. The joint reference needs no table: P(Y = 1 | x) = rho if pi(x) else 1 - rho.
+        marginal. With uniform noise this equals rho q + (1 - rho)(1 - q), q = P(pi = 1 | x_S).
         """
-        p = self.pi(X)
-        self.p_pi = float(p.mean())
+        self.p_pi = float(self.pi(X).mean())
+        p = self.p_joint(X)
         self.p_d = self.clause_values(X).mean(axis=0)
-        self.pi_given_view = {}
+        self.py_given_view = {}
         for k, S in self.views.items():
             codes = X[:, S] @ (1 << np.arange(len(S)))  # pattern -> integer code
             tot = np.bincount(codes, minlength=1 << len(S))
             pos = np.bincount(codes, weights=p, minlength=1 << len(S))
             # code c has bit j = value of the j-th feature in S
-            self.pi_given_view[k] = {
+            self.py_given_view[k] = {
                 tuple((c >> j) & 1 for j in range(len(S))): (pos[c] / tot[c] if tot[c]
-                                                             else self.p_pi)
+                                                             else float(p.mean()))
                 for c in range(1 << len(S))
             }
 
     def p_solo(self, x_view: np.ndarray, k: str) -> np.ndarray:
         """Bayes P(Y = 1 | x_{S_k}), shape (m,), for x_view of shape (m, |S_k|)."""
-        q = np.array([self.pi_given_view[k][tuple(int(v) for v in row)] for row in x_view])
-        return self.rho * q + (1 - self.rho) * (1 - q)
+        return np.array([self.py_given_view[k][tuple(int(v) for v in row)] for row in x_view])
 
     def p_joint(self, X: np.ndarray) -> np.ndarray:
         """Bayes P(Y = 1 | x) for full feature vectors, shape (m,)."""
-        return np.where(self.pi(X) == 1, self.rho, 1 - self.rho)
+        if self.noise_clause is None:
+            return np.where(self.pi(X) == 1, self.rho, 1 - self.rho)
+        D = self.clause_values(X)
+        k = self.noise_clause
+        others = np.delete(D, k, axis=1).all(axis=1)
+        return np.where(others, np.where(D[:, k] == 1, 1 - self.eps, self.eps), 0.0)
 
     def references(self, m: int = 400_000, seed: int = 7) -> dict:
         """Accuracy and log loss of the Bayes-optimal solo and joint predictors (Monte Carlo)."""

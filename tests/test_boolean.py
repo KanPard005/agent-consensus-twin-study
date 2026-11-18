@@ -179,3 +179,21 @@ def test_single_agent_mode():
     assert "queries 3 to 5" in out[1]
     assert "run is over" in out[-1] and api.done("A")
     assert not np.isnan(api.solo_pred["A"][:, 0]).any()
+
+
+def test_clause_noise_is_calibrated_and_concentrated():
+    """Noise only in clause 1: P(y = pi) = rho overall, y = pi exactly when another clause is
+    0, the same features as the uniform model for the same seed, and a consistent joint Bayes."""
+    kw = dict(clauses=[[0, 1], [2, 3], [4, 5]], views={"A": [0, 1, 2], "B": [3, 4, 5]},
+              p_clause=0.5 ** (1 / 3), n_mc=200_000)
+    env = BooleanCopulaEnv(noise_clause=1, **kw)
+    X, pi, y = env.sample(200_000, np.random.default_rng(4))
+    D = env.clause_values(X)
+    others = D[:, [0, 2]].all(axis=1)
+    assert np.mean(y == pi) == pytest.approx(0.9, abs=0.005)
+    assert np.all(y[~others] == 0)
+    assert np.mean(y[others] != pi[others]) == pytest.approx(env.eps, abs=0.005)
+    X_u, _, _ = BooleanCopulaEnv(**kw).sample(200_000, np.random.default_rng(4))
+    assert np.array_equal(X, X_u)
+    assert np.mean((env.p_joint(X) > 0.5) == y) == pytest.approx(0.9, abs=0.005)
+
