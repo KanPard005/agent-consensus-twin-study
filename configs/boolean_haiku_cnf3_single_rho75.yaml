@@ -1,0 +1,33 @@
+# Single-agent reference for the block split at rho = 0.75 (configs/boolean_haiku_cnf3_blocks_rho75.yaml):
+# one agent with all six features on pair r's cases, uniform label noise rho = 0.75.
+#
+# Boolean task with three clauses (Kanad, 2026-11-18): y = (x1 or x2) and (x3 or x4) and (x5 or x6),
+# flipped with probability 1 - rho. p_clause = 0.5^(1/3) so that P(pi = 1) = 0.5. Copula as before
+# (r_within = 0.5 inside a clause). Single-agent reference: one agent sees all six features of pair r's cases.
+# 400 study rows, 100 solo and 100 partner queries. Pilot: one pair (or one single agent).
+experiment: boolean_haiku_cnf3_single_rho75
+seed: 0
+n_runs: 1
+single: true
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5]]
+  views: {A: [0, 1, 2, 3, 4, 5], B: [0, 1, 2, 3, 4, 5]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.7937005259840998
+  rho: 0.75
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [x1, x2, x3, x4, x5, x6]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10
