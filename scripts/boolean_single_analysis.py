@@ -47,10 +47,11 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("single")
     ap.add_argument("pairs")
+    ap.add_argument("--k1", type=int, default=20, help="number of solo queries (K)")
     args = ap.parse_args()
     single = runs(Path(args.single), "run{r}_solo.jsonl")
     pairs = runs(Path(args.pairs), "run{r}.jsonl")
-    K1 = 20
+    K1 = args.k1
     pooled = {"first": [], "rest": [], "pair_A": [], "pair_B": []}
     per_run = []
     cells: dict[str, list] = {}
