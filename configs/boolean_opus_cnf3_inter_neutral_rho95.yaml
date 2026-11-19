@@ -1,0 +1,36 @@
+# Manipulation (Kanad, 2026-11-18): the interleaved three-clause task at rho = 0.95 with feature
+# names that do not give away the clause pairing. With x1..x6, "x1 goes with x2" can be guessed from
+# the numbering (an Opus twin said "maybe x1~x2, x3~x4, x5~x6" at query 104). Here A sees a1, a2, a3
+# and B sees b1, b2, b3, with B's columns in a fixed shuffled order:
+#   a1 = x1, a2 = x3, a3 = x5;   b1 = x2, b2 = x6, b3 = x4
+# so the clauses are (a1 or b1), (a2 or b3), (a3 or b2). The index-matching guess a_i ~ b_i is right
+# for one clause of three, as for a random pairing on average. Features, labels, cases and Bayes
+# references are those of configs/boolean_haiku_cnf3_inter.yaml at rho = 0.95, pair for pair (only the
+# order of B's columns and the names change).
+# 400 study rows, 100 solo and 100 partner queries.
+experiment: boolean_opus_cnf3_inter_neutral_rho95
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5]]
+  views: {A: [0, 2, 4], B: [1, 5, 3]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.7937005259840998
+  rho: 0.95
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-opus-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 20.0
+  max_continues: 10
