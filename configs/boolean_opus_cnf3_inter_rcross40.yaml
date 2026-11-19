@@ -1,0 +1,32 @@
+# Opus 5.5, interleaved split with cross-clause dependence (Kanad, 2026-11-19): r_cross = 0.4,
+# p_pi = 0.5, rho = 0.9. Neutral, shuffled names as configs/boolean_opus_cnf3_inter_neutral_rho95.yaml:
+# A sees a1, a2, a3 = x1, x3, x5; B sees b1, b2, b3 = x2, x6, x4, so the clauses are (a1 or b1),
+# (a2 or b3), (a3 or b2). Same cases as the block runs at this r_cross (only the views differ),
+# so configs/boolean_opus_cnf3_single_rcross40.yaml is the single-agent reference.
+# 400 study rows, 100 solo and 100 partner queries; one pair.
+experiment: boolean_opus_cnf3_inter_rcross40
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5]]
+  views: {A: [0, 2, 4], B: [1, 5, 3]}
+  r_within: 0.5
+  r_cross: 0.4
+  p_pi: 0.5
+  rho: 0.9
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-opus-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 20.0
+  max_continues: 10
