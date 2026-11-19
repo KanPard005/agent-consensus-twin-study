@@ -5,13 +5,19 @@ Usage:
     python scripts/boolean_analysis.py results/boolean_haiku [more experiment folders ...]
         [--out results/boolean_haiku/analysis]
 
-Per twin and partner query, with D_own the OR of the twin's own clause and D_other the
-partner's:
+Per twin and partner query, with D_own = 1 iff every clause the twin sees in full is true
+(the AND of those clause values; NaN when it sees no clause in full, as in the mixed and
+interleaved splits) and D_other the same for the partner. Which clauses a twin sees in full is
+read from the run's config.yaml (env.clauses, env.views):
 - when D_own = 0 the twin alone knows y = 0 up to noise (Bayes P(y=1) = 1 - rho);
-- when D_own = 1 the answer is the partner's clause: the Bayes joint label is D_other.
+- when D_own = 1 and every clause is seen in full by one twin (the clean two-clause split), the
+  answer is the partner's: the Bayes joint label is D_other. With a clause split between the twins
+  (three-clause block split) D_other = 0 still means y = 0, but D_other = 1 leaves the split
+  clause open, so use "partner_needed" for the full comparison with Bayes.
 So "uses the partner" is measured where D_own = 1: the share of finals whose label equals
-D_other (1.0 for the joint Bayes rule; the solo Bayes rule always says 1 there when the clauses
-are independent and p_clause > 0.5, so it matches D_other only when D_other = 1).
+D_other (1.0 for the joint Bayes rule in the clean split; the solo Bayes rule always says 1 there
+when the clauses are independent and p_clause > 0.5, so it matches D_other only when
+D_other = 1).
 Writes partner_queries.json, summary.json and a figure.
 """
 
@@ -25,6 +31,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -35,8 +42,26 @@ from consensus.plotting_boolean import plot_boolean_summary  # noqa: E402
 FEATURE_VALUE = re.compile(r"\bx\d+\s*[=:]\s*[01]\b")
 
 
+def seen_clauses(run_dir: Path) -> dict[str, list[int]]:
+    """Indices of the clauses each twin sees in full, from the run's config.
+
+    A twin can be sure that y = 0 only through a clause whose features it all sees, so these
+    are the clauses that define D_own. (Before 2026-11-18 this was hard-coded as clause 0 for A
+    and clause 1 for B, which is right only for the clean two-clause split.)
+    """
+    env = yaml.safe_load((run_dir / "config.yaml").read_text())["env"]
+    return {k: [c for c, feats in enumerate(env["clauses"]) if set(feats) <= set(view)]
+            for k, view in env["views"].items()}
+
+
+def clause_and(values: list[int], idx: list[int]) -> float:
+    """AND of the given clause values; NaN when the twin sees no clause in full."""
+    return float(all(values[c] for c in idx)) if idx else float("nan")
+
+
 def load_partner(run_dir: Path) -> list[dict]:
     """One row per (run, partner query, twin)."""
+    seen = seen_clauses(run_dir)
     rows = []
     for f in sorted((run_dir / "transcripts").glob("run*.jsonl")):
         m = re.fullmatch(r"run(\d+)\.jsonl", f.name)
@@ -44,12 +69,12 @@ def load_partner(run_dir: Path) -> list[dict]:
             continue
         for line in f.read_text().splitlines():
             rec = json.loads(line)
-            for k, o, own_c in (("A", "B", 0), ("B", "A", 1)):
+            for k, o in (("A", "B"), ("B", "A")):
                 msgs = [mm["text"] for mm in rec["messages"] if mm["from"] == k]
                 rows.append({
                     "dir": run_dir.name, "run": int(m.group(1)), "t": rec["t"], "twin": k,
-                    "y": rec["y"], "pi": rec["pi"], "d_own": rec["clauses"][own_c],
-                    "d_other": rec["clauses"][1 - own_c],
+                    "y": rec["y"], "pi": rec["pi"], "d_own": clause_and(rec["clauses"], seen[k]),
+                    "d_other": clause_and(rec["clauses"], seen[o]),
                     "p_open": rec["opening"][k][0], "l_open": rec["opening"][k][1],
                     "p_final": rec["final"][k][0], "l_final": rec["final"][k][1],
                     "p_partner_open": rec["opening"][o][0],
@@ -61,6 +86,7 @@ def load_partner(run_dir: Path) -> list[dict]:
 
 
 def load_solo(run_dir: Path) -> list[dict]:
+    seen = seen_clauses(run_dir)
     rows = []
     for f in sorted((run_dir / "transcripts").glob("run*_solo.jsonl")):
         r = int(re.match(r"run(\d+)_", f.name).group(1))
@@ -70,7 +96,7 @@ def load_solo(run_dir: Path) -> list[dict]:
             rows.append({"dir": run_dir.name, "run": r, "i": rec["i"], "twin": k, "y": rec["y"],
                          "p": rec["p"], "label": rec["label"],
                          "p_bayes_solo": rec["p_bayes_solo"],
-                         "d_own": rec["clauses"][0 if k == "A" else 1]})
+                         "d_own": clause_and(rec["clauses"], seen[k])})
     return rows
 
 
@@ -120,6 +146,9 @@ def summarize(part: list[dict], solo: list[dict]) -> dict:
     }
     for d in (0, 1):
         s = d_own == d
+        if not s.any():  # no clause seen in full (mixed / interleaved split)
+            out[f"d_own={d}"] = {"n": 0}
+            continue
         out[f"d_own={d}"] = {
             "n": int(s.sum()),
             "acc_open": float(np.mean(lo[s] == y[s])),
@@ -130,7 +159,8 @@ def summarize(part: list[dict], solo: list[dict]) -> dict:
         }
     # The own-features Bayes rule says 1 whenever D_own = 1 (independent clauses, p_clause > 0.5),
     # so it matches D_other there exactly when D_other = 1: the bar to beat for "uses the partner".
-    out["solo_rule_eq_d_other_d_own1"] = float(np.mean(d_oth[d_own == 1] == 1))
+    out["solo_rule_eq_d_other_d_own1"] = (float(np.mean(d_oth[d_own == 1] == 1))
+                                          if (d_own == 1).any() else None)
     block = t // 10
     # Split-agnostic deference (needed for the mixed split, where clause values no longer say
     # who knows what): "partner needed" = queries where the Bayes label from the twin's own

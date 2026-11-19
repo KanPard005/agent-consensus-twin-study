@@ -38,8 +38,9 @@ def plot_boolean_summary(s: dict):
     blocks = s["eq_d_other_by_block_d_own1"]
     xs = [int(b) for b in blocks]
     ax.plot([10 * b + 5 for b in xs], list(blocks.values()), marker="o", c="#1f4fbf")
-    ax.axhline(s["solo_rule_eq_d_other_d_own1"], ls="--", c="k", lw=1,
-               label="Bayes, own features (always 1)")
+    if s["solo_rule_eq_d_other_d_own1"] is not None:  # None: no clause seen in full
+        ax.axhline(s["solo_rule_eq_d_other_d_own1"], ls="--", c="k", lw=1,
+                   label="Bayes, own features (always 1)")
     ax.axhline(1.0, ls=":", c="k", lw=1, label="Bayes, all features")
     ax.legend(loc="lower right", fontsize=8, frameon=False)
     ax.set_ylim(0, 1.02)
