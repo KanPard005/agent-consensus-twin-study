@@ -263,3 +263,65 @@ def test_no_training_starts_in_the_partner_phase():
         BooleanAPI({k: (empty[k], np.zeros(0, int)) for k in "AB"},
                    {"x": {k: env.view(Xq, k) for k in "AB"}, "y": yq},
                    {k: env.view(Xq, k) for k in "AB"}, yq, LABELS, no_training=True)
+
+
+# ---- new features at the queries (study_views / study_labels, LogBook 2026-11-19) ----------
+CL4 = [[0, 1], [2, 3], [4, 5], [6, 7]]
+V4 = {"A": [0, 1, 2, 3], "B": [4, 5, 6, 7]}
+SV4 = {"A": [0, 1], "B": [4, 5]}
+L4 = {"A": ["a1", "a2", "a3", "a4"], "B": ["b1", "b2", "b3", "b4"]}
+
+
+def make_api4(new_at="solo", K=2, T=2, n=4):
+    env = BooleanCopulaEnv(clauses=CL4, views=V4, study_views=SV4, p_pi=0.5, n_mc=100_000)
+    rng = np.random.default_rng(0)
+    Xtr, _, ytr = env.sample(n, rng)
+    Xs, _, ys = env.sample(K, rng)
+    Xq, _, yq = env.sample(T, rng)
+    solo_view = env.view if new_at == "solo" else env.study_view
+    api = BooleanAPI({k: (env.study_view(Xtr, k), ytr) for k in "AB"},
+                     {"x": {k: solo_view(Xs, k) for k in "AB"}, "y": ys},
+                     {k: env.view(Xq, k) for k in "AB"}, yq, L4, page_size=4, cap=30,
+                     study_labels={k: L4[k][:2] for k in "AB"}, new_at=new_at)
+    for k in "AB":
+        pr = prompts(api, k)
+        api.solo_intro[k], api.partner_intro[k] = pr["solo"], pr["partner"]
+    return env, api
+
+
+def test_study_bayes_is_coarser_than_view():
+    env, _ = make_api4()
+    ref = env.references(m=100_000)
+    assert ref["acc_A_study"] < ref["acc_A"] < ref["acc_joint"]
+    # The studied clause alone: P(y = 1 | its OR = 0) = 1 - rho.
+    assert env.py_given_study["A"][(0, 0)] == pytest.approx(0.1, abs=0.01)
+
+
+@pytest.mark.parametrize("new_at", ["solo", "partner"])
+def test_new_features_appear_and_are_announced_once(new_at):
+    _, api = make_api4(new_at)
+    pr = prompts(api, "A")
+    assert "4 binary features (a1, a2)" not in pr["system"]
+    assert "2 binary features (a1, a2)" in pr["system"] and "a3" not in pr["system"]
+    announce = "The new features may have information that your other features do not."
+    assert (announce in pr["solo"]) == (new_at == "solo")
+    assert (announce in pr["partner"]) == (new_at == "partner")
+    api.get_training_data("A", 4)
+    assert "a1, a2, y" in api.get_training_data("B", 4).replace("b", "a")
+    assert "columns a1, a2, y" in api.list_datasets("A")
+    api.start_queries("A")
+    txt = api.next_query("A")
+    assert ("a3=" in txt) == (new_at == "solo")
+    assert ("a3" in api.list_datasets("A")) == (new_at == "solo")
+    assert "added" in api.add_case("A", "training")
+    api.submit_prediction("A", 0.5, 1)
+    if new_at == "solo":
+        # training rows have no a3: counted on the solo row only, the rest reported as skipped
+        res = api.count("A", "training", "a3 == 1 or a3 == 0")
+        assert "(y = 1" in res and "4 rows were skipped" in res
+        assert "cannot be given" in api.add_case("A", "training", query=1, values={"a3": 1})
+
+
+def test_old_prompts_keep_their_count_example():
+    api = make_api()
+    assert "`x1 == 1 and not (x2 == 1 or x3 == 1)`" in prompts(api, "A")["system"]

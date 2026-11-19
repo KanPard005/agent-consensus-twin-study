@@ -1,0 +1,34 @@
+# Order control for configs/boolean_haiku_newfeat.yaml (Kanad, 2026-11-19, LogBook note "Boolean
+# experiments: further extensions"): the same task, cases and wording, but the twins answer the
+# solo queries with only their studied features (A: a1, a2; B: b1, b2). The new features (a3, a4 /
+# b3, b4) first appear at the partner queries, announced in the partner intro together with the
+# partner, so own new features and the partner arrive at the same time.
+# Bayes accuracy: studied features 0.625, all own features 0.734, all eight 0.901.
+experiment: boolean_haiku_newfeat_atpartner
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5], [6, 7]]
+  views: {A: [0, 1, 2, 3], B: [4, 5, 6, 7]}
+  study_views: {A: [0, 1], B: [4, 5]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_pi: 0.5
+  rho: 0.9
+
+new_at: partner
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, a4], B: [b1, b2, b3, b4]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10

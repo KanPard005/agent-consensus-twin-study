@@ -45,6 +45,7 @@ def query_info(env: BooleanCopulaEnv, X: np.ndarray) -> dict:
         "pi": env.pi(X),
         "clauses": env.clause_values(X),
         "p_bayes_solo": {k: env.p_solo(env.view(X, k), k) for k in "AB"},
+        "p_bayes_study": {k: env.p_study(env.study_view(X, k), k) for k in "AB"},
         "p_bayes_joint": env.p_joint(X),
     }
 
@@ -58,14 +59,22 @@ def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
     ag = cfg["agent"]
     (Xtr, ytr), (Xs, ys), (Xq, yq) = train, solo, queries
     n_train = n_train or {k: len(ytr) for k in "AB"}
+    # New features (env.study_views): twin k studies the first |study_views[k]| of its labels;
+    # the others appear at the solo queries, or at the partner queries if new_at = "partner".
+    new_at = cfg.get("new_at", "solo")
+    study_labels = {k: ag["labels"][k][: len(env.study_views[k])] for k in "AB"}
+    for k in "AB":
+        if env.views[k][: len(env.study_views[k])] != list(env.study_views[k]):
+            raise ValueError("study_views[k] must be the first features of views[k]")
+    solo_view = env.view if new_at == "solo" else env.study_view
     return BooleanAPI(
-        train={k: (env.view(Xtr[: n_train[k]], k), ytr[: n_train[k]]) for k in "AB"},
-        solo={"x": {k: env.view(Xs, k) for k in "AB"}, "y": ys},
+        train={k: (env.study_view(Xtr[: n_train[k]], k), ytr[: n_train[k]]) for k in "AB"},
+        solo={"x": {k: solo_view(Xs, k) for k in "AB"}, "y": ys},
         queries={k: env.view(Xq, k) for k in "AB"},
         y=yq, labels=ag["labels"], page_size=ag["page_size"], cap=ag["cap"],
         max_chars=ag["max_chars"],
         info={"solo": query_info(env, Xs), "partner": query_info(env, Xq)},
-        no_training=no_training,
+        no_training=no_training, study_labels=study_labels, new_at=new_at,
     )
 
 

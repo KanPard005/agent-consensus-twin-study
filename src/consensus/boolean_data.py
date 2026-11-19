@@ -27,6 +27,11 @@ XOR label (`label = "xor"`, Kanad 2026-11-19): pi(X) = D_1 xor D_2 xor ... (pari
 ORs) instead of their AND. With two clauses, p_clause = 0.5 and r_cross = 0, each twin's own
 clause says nothing about y (P(y = 1 | own features) = 0.5 exactly), so pooling probabilities
 gains nothing; only exchanging the clause values does.
+
+New features at the queries (`study_views`, Kanad 2026-11-19, note "Boolean experiments: further
+extensions"): each twin studies only a subset of its features (`study_views[k]`, a subset of
+`views[k]`) and sees the rest from the queries on. The Bayes reference P(Y = 1 | x_study) is kept
+next to P(Y = 1 | x_view), so the analysis can tell use of the new features from use of the old.
 """
 
 from __future__ import annotations
@@ -66,6 +71,9 @@ class BooleanCopulaEnv:
         gives P(pi = 1) > p_pi, so the base rate would drift with the correlation.
     label : {"and", "xor"}
         How the clause ORs combine into pi: their AND (the CNF) or their parity.
+    study_views : {"A": [...], "B": [...]} or None
+        Features each twin sees in the study phase, a subset of its view; None means its whole
+        view. The other features of the view appear only in the queries.
     """
 
     clauses: list[list[int]]
@@ -79,6 +87,7 @@ class BooleanCopulaEnv:
     noise_clause: int | None = None
     p_pi: float | None = None
     label: str = "and"
+    study_views: dict[str, list[int]] | None = None
     Sigma: np.ndarray = field(init=False, repr=False)
     t: np.ndarray = field(init=False)  # threshold per feature, shape (n,)
 
@@ -97,6 +106,11 @@ class BooleanCopulaEnv:
             # Both calibrations assume the AND: a flip of one clause changes y only when the
             # others are 1, and P(pi = 1) increases with p_clause. Neither holds for parity.
             raise ValueError("label 'xor' supports neither noise_clause nor p_pi")
+        if self.study_views is None:
+            self.study_views = {k: list(v) for k, v in self.views.items()}
+        for k, S in self.study_views.items():
+            if not set(S) <= set(self.views[k]):
+                raise ValueError(f"study_views[{k!r}] must be a subset of views[{k!r}]")
         self.clause_of = np.empty(self.n, int)
         for k, c in enumerate(self.clauses):
             self.clause_of[c] = k
@@ -152,6 +166,7 @@ class BooleanCopulaEnv:
             noise_clause=cfg.get("noise_clause"),
             p_pi=cfg.get("p_pi"),
             label=str(cfg.get("label", "and")),
+            study_views=cfg.get("study_views"),
         )
 
     # ---- sampling --------------------------------------------------------------------------
@@ -193,6 +208,10 @@ class BooleanCopulaEnv:
         """The columns twin k sees, shape (m, |S_k|)."""
         return X[:, self.views[k]]
 
+    def study_view(self, X: np.ndarray, k: str) -> np.ndarray:
+        """The columns twin k sees in the study phase, shape (m, |study_views[k]|)."""
+        return X[:, self.study_views[k]]
+
     # ---- Bayes references --------------------------------------------------------------------
     def _bayes_tables(self, X: np.ndarray) -> None:
         """P(Y = 1 | x_S) for each twin's view S: the Monte Carlo mean of the exact P(Y = 1 | x)
@@ -204,21 +223,17 @@ class BooleanCopulaEnv:
         self.p_pi = float(self.pi(X).mean())
         p = self.p_joint(X)
         self.p_d = self.clause_values(X).mean(axis=0)
-        self.py_given_view = {}
-        for k, S in self.views.items():
-            codes = X[:, S] @ (1 << np.arange(len(S)))  # pattern -> integer code
-            tot = np.bincount(codes, minlength=1 << len(S))
-            pos = np.bincount(codes, weights=p, minlength=1 << len(S))
-            # code c has bit j = value of the j-th feature in S
-            self.py_given_view[k] = {
-                tuple((c >> j) & 1 for j in range(len(S))): (pos[c] / tot[c] if tot[c]
-                                                             else float(p.mean()))
-                for c in range(1 << len(S))
-            }
+        self.py_given_view = {k: _pattern_table(X[:, S], p) for k, S in self.views.items()}
+        self.py_given_study = {k: _pattern_table(X[:, S], p)
+                               for k, S in self.study_views.items()}
 
     def p_solo(self, x_view: np.ndarray, k: str) -> np.ndarray:
         """Bayes P(Y = 1 | x_{S_k}), shape (m,), for x_view of shape (m, |S_k|)."""
         return np.array([self.py_given_view[k][tuple(int(v) for v in row)] for row in x_view])
+
+    def p_study(self, x_study: np.ndarray, k: str) -> np.ndarray:
+        """Bayes P(Y = 1 | features twin k studied), shape (m,)."""
+        return np.array([self.py_given_study[k][tuple(int(v) for v in row)] for row in x_study])
 
     def p_joint(self, X: np.ndarray) -> np.ndarray:
         """Bayes P(Y = 1 | x) for full feature vectors, shape (m,)."""
@@ -235,6 +250,9 @@ class BooleanCopulaEnv:
         out = {"p_pi": self.p_pi, "p_clause": [float(v) for v in self.p_d],
                "phi": self.phi(X)}
         preds = {k: self.p_solo(self.view(X, k), k) for k in self.views}
+        if self.study_views != self.views:
+            preds.update({f"{k}_study": self.p_study(self.study_view(X, k), k)
+                          for k in self.views})
         preds["joint"] = self.p_joint(X)
         for name, pr in preds.items():
             out[f"acc_{name}"] = float(np.mean((pr > 0.5) == (y == 1)))
@@ -249,6 +267,17 @@ class BooleanCopulaEnv:
         off = ~np.eye(self.n, dtype=bool)
         return {"within": float(C[same & off].mean()) if (same & off).any() else None,
                 "cross": float(C[~same].mean()) if (~same).any() else None}
+
+
+def _pattern_table(XS: np.ndarray, p: np.ndarray) -> dict:
+    """{pattern tuple: mean of p over the rows with that pattern} for binary columns XS; a
+    pattern with no rows gets the overall mean. Pattern code c has bit j = column j's value."""
+    d = XS.shape[1]
+    codes = XS @ (1 << np.arange(d))
+    tot = np.bincount(codes, minlength=1 << d)
+    pos = np.bincount(codes, weights=p, minlength=1 << d)
+    return {tuple((c >> j) & 1 for j in range(d)): (pos[c] / tot[c] if tot[c] else float(p.mean()))
+            for c in range(1 << d)}
 
 
 def log_loss(p: np.ndarray, y: np.ndarray, eps: float = 1e-3) -> np.ndarray:

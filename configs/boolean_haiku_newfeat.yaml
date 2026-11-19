@@ -1,0 +1,36 @@
+# New features at the solo queries (Kanad, 2026-11-19, LogBook note "Boolean experiments: further
+# extensions"). Four-clause AND, y = (a1 v a2) & (a3 v a4) & (b1 v b2) & (b3 v b4), P(pi = 1) = 0.5
+# (each clause true w.p. 0.841), rho = 0.9. Each twin studies only its first clause (A: a1, a2;
+# B: b1, b2); from the solo queries on it also sees its second clause (a3, a4 / b3, b4), announced
+# with the partner intro's wording ("may have information that your other features do not").
+# The partner arrives at the partner queries as before. The new own clause and the partner's
+# clauses play the same role in the formula, so their weights in the finals can be compared.
+# Bayes accuracy: studied features 0.625, all own features 0.734, all eight 0.901.
+experiment: boolean_haiku_newfeat
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5], [6, 7]]
+  views: {A: [0, 1, 2, 3], B: [4, 5, 6, 7]}
+  study_views: {A: [0, 1], B: [4, 5]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_pi: 0.5
+  rho: 0.9
+
+new_at: solo
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, a4], B: [b1, b2, b3, b4]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10

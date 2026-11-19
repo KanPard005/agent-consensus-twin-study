@@ -17,6 +17,12 @@ read so far; new_dataset starts another one with copies of training cases and pa
 add_case adds the current or a past query, with any extra columns the twin gives (such as features
 the partner sent). Queries are numbered 1..K (solo) and K+1..K+T (partner).
 
+New features (Kanad, 2026-11-19, note "Boolean experiments: further extensions"): a twin can study
+fewer features than it later sees (`study_labels`). The others appear at the solo queries
+(`new_at = "solo"`) or only at the partner queries (`new_at = "partner"`, the order control), and
+are announced in that phase's intro with the wording the partner intro uses for the partner
+("may have information that ... do not"). Training rows have no value for them.
+
 The waiting logic of the partner phase is that of `consensus.sessions.ConsensusAPI` with the
 individual team rule; the session loop is `consensus.sessions.TwinSession`.
 """
@@ -54,7 +60,7 @@ after that, and its result explains what comes next.
 - show_dataset(name): every row of one of your datasets.
 - count(name, condition): how many rows of a dataset satisfy a condition, and how many of those \
 have y = 1 and y = 0. The condition is a logical expression of the dataset's columns, for example \
-`{ex1} == 1 and not ({ex2} == 1 or {ex3} == 1)`; an empty condition counts every row.
+`{example}`; an empty condition counts every row.
 - new_dataset(name, include_training, queries): starts a new dataset, with copies of your \
 labelled cases if include_training is true and of the past queries whose numbers you list.
 - add_case(name, query, values): during the queries, adds a case to one of your datasets: the \
@@ -66,6 +72,13 @@ Your datasets stay available during the queries.
 Keep working with these tools and study the labelled cases. When you have finished studying, \
 call start_queries. Keep working with the tools until a tool result says that the run is over; \
 do not stop before that."""
+
+# Announcement of the features a twin did not study (`new_at`): parallel to the partner intro's
+# "Your partner may have information that you do not" (Kanad, 2026-11-19), so the two sources are
+# introduced in the same words.
+NEW_FEATURES = """ From now on each case also has the features {new}, which the labelled cases \
+you studied did not have: your features are now {own}. The new features may have information \
+that your other features do not."""
 
 SCORING = """\
 the log loss of your probability (minus the natural log of the probability you gave to the true \
@@ -104,7 +117,7 @@ Data API:
 - show_dataset(name): every row of one of your datasets.
 - count(name, condition): how many rows of a dataset satisfy a condition, and how many of those \
 have y = 1 and y = 0. The condition is a logical expression of the dataset's columns, for example \
-`{ex1} == 1 and not ({ex2} == 1 or {ex3} == 1)`; an empty condition counts every row.
+`{example}`; an empty condition counts every row.
 - new_dataset(name, include_training, queries): starts a new dataset, with copies of the past \
 queries whose numbers you list.
 - add_case(name, query, values): adds a case to one of your datasets: the current case (its y is \
@@ -121,8 +134,8 @@ You can make at most {cap} tool calls per query. Call next_query to begin, and k
 the tools until a tool result says that the run is over; do not stop before that."""
 
 SOLO_INTRO = """\
-You have finished studying ({n_train} labelled cases). Next you will answer {K} queries \
-(queries 1 to {K}) on your own. For each one:
+You have finished studying ({n_train} labelled cases).{new_features} Next you will answer {K} \
+queries (queries 1 to {K}) on your own. For each one:
 - next_query gives you the features of the case;
 - submit_prediction(p, label) records your probability p that y = 1 and the label (0 or 1) you \
 predict; then the true y is revealed to you.
@@ -133,8 +146,8 @@ past query, with its revealed y, to any of your datasets). After the {K} queries
 further instructions. You can make at most {cap} tool calls per query. Call next_query to begin."""
 
 PARTNER_INTRO = """\
-You have finished studying ({n_train} labelled cases) and answering {K} queries on your own. From \
-now on you have a partner, agent {other}: another instance of the same AI model as you, with the \
+You have finished studying ({n_train} labelled cases) and answering {K} queries on your own.\
+{new_features} From now on you have a partner, agent {other}: another instance of the same AI model as you, with the \
 same instructions, which also studied its own cases and answered {K} queries on its own. Your \
 features are {own}; your partner's features are {other_feats}: your features are different, but \
 you both predict the same y for each case. Your partner may have information that you do not.
@@ -287,7 +300,13 @@ class BooleanAPI:
     queries : {"A": X_A, "B": X_B}; y : (T,)
         The partner-phase query stream (the same case for both twins).
     labels : {"A": [...], "B": [...]}
-        Feature names per twin.
+        Feature names per twin (all its features, as in the partner queries).
+    study_labels : {"A": [...], "B": [...]}, optional
+        Names of the features twin k studies (a prefix of labels[k]; the train X_k has these
+        columns). Default: every feature.
+    new_at : {"solo", "partner"}
+        Where the features not studied first appear (only matters with study_labels); solo X_k
+        has the study columns if "partner".
     info : dict of per-query arrays, optional
         Extra values stored in every record (x, pi, clause values, Bayes probabilities), keyed
         "solo" / "partner"; not shown to the twins.
@@ -296,7 +315,8 @@ class BooleanAPI:
     def __init__(self, train: dict, solo: dict, queries: dict, y: np.ndarray, labels: dict,
                  page_size: int = 40, cap: int = 40, max_chars: int = 2000,
                  info: dict | None = None, single: int | None = None,
-                 no_training: bool = False) -> None:
+                 no_training: bool = False, study_labels: dict | None = None,
+                 new_at: str = "solo") -> None:
         # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
         # which all run in the solo phase; after query K1 the agent gets `single_break`, after
         # query K the run is over. Only twin A acts.
@@ -304,6 +324,14 @@ class BooleanAPI:
         self.single_break = ""  # set by the session (`prompts`)
         self.cond = threading.Condition()
         self.labels = labels
+        self.study_labels = study_labels or labels
+        for k in "AB":
+            if list(self.study_labels[k]) != list(labels[k][: len(self.study_labels[k])]):
+                raise ValueError("study_labels[k] must be a prefix of labels[k]")
+        if new_at not in ("solo", "partner"):
+            raise ValueError(f"new_at must be 'solo' or 'partner', got {new_at!r}")
+        self.new_at = new_at
+        self.solo_labels = labels if new_at == "solo" else self.study_labels
         self.Xtr = {k: np.asarray(train[k][0]) for k in "AB"}
         self.ytr = {k: np.asarray(train[k][1]) for k in "AB"}
         self.budget = {k: len(self.ytr[k]) for k in "AB"}
@@ -373,18 +401,30 @@ class BooleanAPI:
                              "result": res[:3000], "time": time.time()})
         return res
 
-    def _own_row(self, k: str, x: np.ndarray) -> dict:
-        return {lab: int(v) for lab, v in zip(self.labels[k], x)}
+    def new_features(self, k: str) -> list[str]:
+        """Twin k's features that it did not study."""
+        return list(self.labels[k][len(self.study_labels[k]):])
+
+    def labels_now(self, k: str) -> list[str]:
+        """The names of the features twin k sees in its current phase."""
+        return {"train": self.study_labels, "solo": self.solo_labels}.get(
+            self.phase[k], self.labels)[k]
+
+    @staticmethod
+    def _own_row(names: list[str], x: np.ndarray) -> dict:
+        if len(names) != len(x):
+            raise ValueError("feature names and values differ in length")
+        return {lab: int(v) for lab, v in zip(names, x)}
 
     def _query_case(self, k: str, num: int) -> tuple[dict, int | None]:
         """(own features, y or None if not revealed to twin k) of query number num."""
         if 1 <= num <= self.K:
             i = num - 1
             y = int(self.solo_y[i]) if not np.isnan(self.solo_pred[k][i, 0]) else None
-            return self._own_row(k, self.solo_x[k][i]), y
+            return self._own_row(self.solo_labels[k], self.solo_x[k][i]), y
         q = num - self.K - 1
         if 0 <= q < self.T:
-            return self._own_row(k, self.qx[k][q]), int(self.y[q]) if self.resolved[q] else None
+            return self._own_row(self.labels[k], self.qx[k][q]), int(self.y[q]) if self.resolved[q] else None
         raise IndexError(num)
 
     def _past_queries(self, k: str) -> int:
@@ -435,10 +475,11 @@ class BooleanAPI:
             self.n_seen[k] = b
             rows = []
             for j in range(a, b):
-                row = {**self._own_row(k, self.Xtr[k][j]), "y": int(self.ytr[k][j])}
+                row = {**self._own_row(self.study_labels[k], self.Xtr[k][j]),
+                       "y": int(self.ytr[k][j])}
                 self.datasets[k]["training"]["rows"].append(row)
                 rows.append(", ".join(str(v) for v in row.values()))
-            head = ", ".join(self.labels[k]) + ", y"
+            head = ", ".join(self.study_labels[k]) + ", y"
             return (f"Labelled cases {a + 1}-{b} of {self.budget[k]} ({head}):\n"
                     + "\n".join(rows))
 
@@ -461,7 +502,7 @@ class BooleanAPI:
         with self.cond:
             lines = []
             for name, d in self.datasets[k].items():
-                cols = _columns(d["rows"] + list(d["pending"].values()), self.labels[k])
+                cols = _columns(d["rows"] + list(d["pending"].values()), self.labels_now(k))
                 lines.append(f"{name}: {len(d['rows'])} rows with y"
                              + (f", {len(d['pending'])} waiting for y" if d["pending"] else "")
                              + f"; columns {', '.join(cols)}")
@@ -474,7 +515,7 @@ class BooleanAPI:
                 return f"Error: no dataset named {name!r}."
             if not d["rows"] and not d["pending"]:
                 return f"Dataset {name} is empty."
-            cols = _columns(d["rows"] + list(d["pending"].values()), self.labels[k])
+            cols = _columns(d["rows"] + list(d["pending"].values()), self.labels_now(k))
             out = [f"Dataset {name} ({len(d['rows'])} rows with y; columns {', '.join(cols)}, "
                    "source):"]
             for r in d["rows"]:
@@ -598,7 +639,7 @@ class BooleanAPI:
                     return f"Error: submit your prediction for query {i + 1} first."
                 self.solo_i[k] = i = i + 1
                 feats = ", ".join(f"{lab}={int(v)}" for lab, v in
-                                  zip(self.labels[k], self.solo_x[k][i]))
+                                  zip(self.solo_labels[k], self.solo_x[k][i]))
                 if self.single:
                     return f"Query {i + 1} of {self.K}. Your features: {feats}."
                 return f"Query {i + 1} of {self.K} (on your own). Your features: {feats}."
@@ -874,22 +915,34 @@ def build_tools(api: BooleanAPI, k: str):
     return server, [f"mcp__data__{t.name}" for t in tools], tools
 
 
+def count_example(labels: list[str]) -> str:
+    """The example condition in the data API text: the one every earlier run had for three or
+    more features, a two-feature version otherwise (where it would repeat a name)."""
+    if len(labels) >= 3:
+        return f"{labels[0]} == 1 and not ({labels[1]} == 1 or {labels[-1]} == 1)"
+    return f"{labels[0]} == 1 and not ({labels[-1]} == 1)"
+
+
 def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
     """System prompt, solo intro and partner intro of twin k (`{n_train}` filled in later)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
     scoring_final = (SCORING.replace("your probability", "your final probability")
                      .replace("your label", "your final label"))
     if api.no_training:
+        if api.new_features(k):
+            raise ValueError("study_labels needs a study phase (no_training is set)")
         return {"system": SYSTEM_UNTRAINED.format(
                     name=k, d=len(labels), names=", ".join(labels), other=api.other(k),
                     own=", ".join(labels), other_feats=", ".join(other), T=api.T, cap=api.cap,
-                    scoring_final=scoring_final, ex1=labels[0], ex2=labels[1 % len(labels)],
-                    ex3=labels[-1]),
+                    scoring_final=scoring_final, example=count_example(labels)),
                 "solo": "", "partner": ""}
-    system = SYSTEM.format(name=k, d=len(labels), names=", ".join(labels),
-                           budget=api.budget[k], page=api.page_size, ex1=labels[0],
-                           ex2=labels[1 % len(labels)], ex3=labels[-1])
+    studied = api.study_labels[k]
+    system = SYSTEM.format(name=k, d=len(studied), names=", ".join(studied),
+                           budget=api.budget[k], page=api.page_size,
+                           example=count_example(studied))
     if api.single:
+        if api.new_features(k):
+            raise ValueError("study_labels is not supported for the single agent")
         K1 = api.single
         return {"system": system,
                 "solo": SINGLE_INTRO.format(n_train="{n_train}", K1=K1, cap=api.cap,
@@ -897,12 +950,17 @@ def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
                 "break": SINGLE_BREAK.format(K1=K1, T=api.K - K1, first=K1 + 1, last=api.K,
                                              cap=api.cap),
                 "partner": ""}
-    solo = SOLO_INTRO.format(n_train="{n_train}", K=api.K, cap=api.cap, scoring=SCORING)
+    # The new features are announced in the first phase that shows them: the solo queries, or
+    # the partner queries if new_at = "partner" or there are no solo queries.
+    new = api.new_features(k)
+    note = (NEW_FEATURES.format(new=", ".join(new), own=", ".join(labels)) if new else "")
+    in_solo = api.new_at == "solo" and api.K > 0
+    solo = SOLO_INTRO.format(n_train="{n_train}", K=api.K, cap=api.cap, scoring=SCORING,
+                             new_features=note if in_solo else "")
     partner = PARTNER_INTRO.format(
         n_train="{n_train}", K=api.K, other=api.other(k), own=", ".join(labels),
         other_feats=", ".join(other), T=api.T, first=api.K + 1, last=api.K + api.T,
-        cap=api.cap, scoring_final=SCORING.replace("your probability", "your final probability")
-        .replace("your label", "your final label"))
+        cap=api.cap, scoring_final=scoring_final, new_features="" if in_solo else note)
     return {"system": system, "solo": solo, "partner": partner}
 
 
