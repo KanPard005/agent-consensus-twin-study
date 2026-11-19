@@ -1,0 +1,37 @@
+# Unequal study sets (Kanad, 2026-11-19): as configs/boolean_haiku_cnf3_blocks_neutral.yaml, but one twin
+# studies 800 rows and the other 400 (the first 400 of the same 800 cases). The long-trained twin
+# alternates A, B, A, ... by run. Compare with the 400/400 neutral-name block run (10 pairs, 0.811).
+#
+# Control for the r_cross = 0.4 run (Kanad, 2026-11-19): the three-clause block split with the
+# neutral, shuffled names of configs/boolean_haiku_cnf3_blocks_rcross40.yaml (A: a1, a2, a3 = x1, x2, x3;
+# B: b1, b2, b3 = x6, x4, x5) but no cross-clause dependence (r_cross = 0) and the original
+# p_clause = 0.5^(1/3). Features, labels and cases are those of configs/boolean_haiku_cnf3_blocks.yaml,
+# pair for pair; only the names and the order of B's columns change.
+# 400 study rows, 100 solo and 100 partner queries.
+experiment: boolean_haiku_cnf3_blocks_neutral_n400_800
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5]]
+  views: {A: [0, 1, 2], B: [5, 3, 4]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.7937005259840998
+  rho: 0.9
+
+n_train_long: 800
+n_train_short: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10

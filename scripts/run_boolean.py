@@ -50,12 +50,15 @@ def query_info(env: BooleanCopulaEnv, X: np.ndarray) -> dict:
 
 
 def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
-             queries: tuple) -> BooleanAPI:
-    """The two-twin API: each twin sees its own view of the same cases."""
+             queries: tuple, n_train: dict | None = None) -> BooleanAPI:
+    """The two-twin API: each twin sees its own view of the same cases. With `n_train`
+    ({"A": n_A, "B": n_B}) twin k studies the first n_k of the study cases, so the twin with
+    fewer rows has a prefix of the other's (the same cases, in the same order)."""
     ag = cfg["agent"]
     (Xtr, ytr), (Xs, ys), (Xq, yq) = train, solo, queries
+    n_train = n_train or {k: len(ytr) for k in "AB"}
     return BooleanAPI(
-        train={k: (env.view(Xtr, k), ytr) for k in "AB"},
+        train={k: (env.view(Xtr[: n_train[k]], k), ytr[: n_train[k]]) for k in "AB"},
         solo={"x": {k: env.view(Xs, k) for k in "AB"}, "y": ys},
         queries={k: env.view(Xq, k) for k in "AB"},
         y=yq, labels=ag["labels"], page_size=ag["page_size"], cap=ag["cap"],
@@ -131,13 +134,21 @@ def main(argv: list[str] | None = None) -> Path:
     summary = {}
     first = cfg.get("first_run", 0)
     for r in range(first, first + cfg["n_runs"]):
-        Xtr, _, ytr = env.sample(cfg["n_train"], np.random.default_rng([seed, r, 0]))
+        # Unequal study sets (Kanad, 2026-11-19): n_train_long / n_train_short, with the
+        # long-trained twin alternating A, B, A, ... by run so the names cannot bias it.
+        if "n_train_long" in cfg:
+            long = "A" if r % 2 == 0 else "B"
+            n_train = {long: cfg["n_train_long"],
+                       ("B" if long == "A" else "A"): cfg["n_train_short"]}
+        else:
+            long, n_train = None, {k: cfg["n_train"] for k in "AB"}
+        Xtr, _, ytr = env.sample(max(n_train.values()), np.random.default_rng([seed, r, 0]))
         Xs, _, ys = env.sample(cfg["K"], np.random.default_rng([seed, r, 1]))
         Xq, _, yq = env.sample(cfg["T"], np.random.default_rng([seed, r, 2]))
         if cfg.get("single"):
             api = single_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq))
         else:
-            api = pair_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq))
+            api = pair_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq), n_train)
         tr = run_dir / "transcripts"
         tr.mkdir(parents=True, exist_ok=True)
         lock = threading.Lock()
@@ -168,6 +179,7 @@ def main(argv: list[str] | None = None) -> Path:
             "errors": {k: tw.error for k, tw in twins.items()},
             "compactions": {k: len(tw.compactions) for k, tw in twins.items()},
             "training_cases": dict(api.n_seen),
+            "long_twin": long,
             "queries_resolved": int(api.resolved.sum()),
             "messages": len(api.messages),
             "datasets": {k: {n: len(d["rows"]) for n, d in api.datasets[k].items()}
