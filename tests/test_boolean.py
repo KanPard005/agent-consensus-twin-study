@@ -230,3 +230,36 @@ def test_xor_label_gives_no_solo_information():
     with pytest.raises(ValueError):
         BooleanCopulaEnv(clauses=[[0, 1, 2], [3, 4, 5]], views={"A": [0, 1, 2], "B": [3, 4, 5]},
                          label="xor", p_pi=0.5, n_mc=10_000)
+
+
+def test_no_training_starts_in_the_partner_phase():
+    """no_training: no study rows or solo queries; both twins start at partner query 1, the
+    study tools are absent and the system prompt is the untrained one."""
+    env = make_env()
+    rng = np.random.default_rng(9)
+    Xq, _, yq = env.sample(2, rng)
+    empty = {k: np.zeros((0, 3), int) for k in "AB"}
+    api = BooleanAPI({k: (empty[k], np.zeros(0, int)) for k in "AB"},
+                     {"x": empty, "y": np.zeros(0, int)}, {k: env.view(Xq, k) for k in "AB"}, yq,
+                     LABELS, no_training=True)
+    assert api.phase == {"A": "query", "B": "query"}
+    pr = prompts(api, "A")
+    assert "There is no study phase" in pr["system"] and "queries 1 to 2" in pr["system"]
+    out = {}
+
+    def twin(k):
+        for _ in range(2):
+            assert "Query" in api.next_query(k)
+            api.submit_opening(k, 0.5, 1)
+            out[k] = api.submit_prediction(k, 0.5, 1)
+
+    th = [threading.Thread(target=twin, args=(k,)) for k in "AB"]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(timeout=10)
+    assert "run is over" in out["A"] and api.resolved.all()
+    with pytest.raises(ValueError):
+        BooleanAPI({k: (empty[k], np.zeros(0, int)) for k in "AB"},
+                   {"x": {k: env.view(Xq, k) for k in "AB"}, "y": yq},
+                   {k: env.view(Xq, k) for k in "AB"}, yq, LABELS, no_training=True)

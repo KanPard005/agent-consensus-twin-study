@@ -71,6 +71,55 @@ SCORING = """\
 the log loss of your probability (minus the natural log of the probability you gave to the true \
 y, with p clipped to [0.001, 0.999]) and by whether your label is correct"""
 
+# No training (Kanad, 2026-11-19): no study rows and no solo queries. The twins meet at query 1,
+# and learn only from the revealed labels. The text is the partner-phase text with the study and
+# solo parts removed, and the data API without get_training_data and start_queries.
+SYSTEM_UNTRAINED = """\
+You are agent {name}. Your task is to predict a binary label y (0 or 1) for each case. For each \
+case you see {d} binary features ({names}), each 0 or 1. The label is a noisy result of a \
+propositional statement (a logical formula) on binary features of the case: y is the value of the \
+statement, except that it is sometimes flipped.
+
+There is no study phase: you start without any labelled cases, and the true y of each query is \
+revealed after it. You have a partner, agent {other}: another instance of the same AI model as \
+you, with the same instructions, which also starts without any labelled cases. Your features are \
+{own}; your partner's features are {other_feats}: your features are different, but you both \
+predict the same y for each case. Your partner may have information that you do not.
+
+There are {T} queries (queries 1 to {T}). For each one:
+- next_query gives you the features of the case (it waits until your partner has also asked, so \
+you both work on the same case);
+- submit_opening(p, label) records your own probability that y = 1 and your label before you \
+talk;
+- then you and your partner can communicate freely: send_message sends a message, and \
+read_messages shows your partner's opening and new messages (it waits until your partner sends \
+something new, submits a prediction, or is also waiting);
+- when you are ready, submit_prediction(p, label) records your own final probability and label \
+(once per query). It waits until your partner has also submitted its final; then both finals and \
+the true y are revealed to both of you.
+You are scored on each query by {scoring_final}; your partner is scored by its own.
+
+Data API:
+- list_datasets(): the names, columns and sizes of your datasets.
+- show_dataset(name): every row of one of your datasets.
+- count(name, condition): how many rows of a dataset satisfy a condition, and how many of those \
+have y = 1 and y = 0. The condition is a logical expression of the dataset's columns, for example \
+`{ex1} == 1 and not ({ex2} == 1 or {ex3} == 1)`; an empty condition counts every row.
+- new_dataset(name, include_training, queries): starts a new dataset, with copies of the past \
+queries whose numbers you list.
+- add_case(name, query, values): adds a case to one of your datasets: the current case (its y is \
+added once it is revealed), or a past query given by its number (its y is added at once). Your \
+features are filled in automatically; values gives the values of any other columns you want the \
+row to have.
+
+At any time during the queries you can also:
+- use the data API: add_case can add the current or a past query to any of your datasets, with \
+values you give for other columns (such as features your partner sends you);
+- communicate any information to your partner, such as your features or your predictions;
+- make use of your partner's features in any way you want.
+You can make at most {cap} tool calls per query. Call next_query to begin, and keep working with \
+the tools until a tool result says that the run is over; do not stop before that."""
+
 SOLO_INTRO = """\
 You have finished studying ({n_train} labelled cases). Next you will answer {K} queries \
 (queries 1 to {K}) on your own. For each one:
@@ -246,7 +295,8 @@ class BooleanAPI:
 
     def __init__(self, train: dict, solo: dict, queries: dict, y: np.ndarray, labels: dict,
                  page_size: int = 40, cap: int = 40, max_chars: int = 2000,
-                 info: dict | None = None, single: int | None = None) -> None:
+                 info: dict | None = None, single: int | None = None,
+                 no_training: bool = False) -> None:
         # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
         # which all run in the solo phase; after query K1 the agent gets `single_break`, after
         # query K the run is over. Only twin A acts.
@@ -263,8 +313,11 @@ class BooleanAPI:
         self.T = len(self.y)
         self.page_size, self.cap, self.max_chars = int(page_size), int(cap), int(max_chars)
         self.info = info or {}
-        self.no_training = False  # read by TwinSession
-        self.phase = {k: "train" for k in "AB"}  # train | solo | query | done
+        # No training: no study rows, no solo queries; both twins start in the partner phase.
+        self.no_training = bool(no_training)  # also read by TwinSession
+        if self.no_training and (self.K or any(self.budget.values()) or single):
+            raise ValueError("no_training needs no study rows, no solo queries and no single agent")
+        self.phase = {k: "query" if self.no_training else "train" for k in "AB"}
         self.n_seen = {k: 0 for k in "AB"}
         self.solo_i = {k: -1 for k in "AB"}
         self.solo_pred = {k: np.full((self.K, 2), np.nan) for k in "AB"}  # (p, label)
@@ -815,6 +868,8 @@ def build_tools(api: BooleanAPI, k: str):
     if api.single:  # no partner: the partner-phase tools are not offered
         tools = [t_ for t_ in tools
                  if t_.name not in ("submit_opening", "send_message", "read_messages")]
+    if api.no_training:  # nothing to study: the study-phase tools are not offered
+        tools = [t_ for t_ in tools if t_.name not in ("get_training_data", "start_queries")]
     server = create_sdk_mcp_server("data", tools=tools)
     return server, [f"mcp__data__{t.name}" for t in tools], tools
 
@@ -822,6 +877,15 @@ def build_tools(api: BooleanAPI, k: str):
 def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
     """System prompt, solo intro and partner intro of twin k (`{n_train}` filled in later)."""
     labels, other = api.labels[k], api.labels[api.other(k)]
+    scoring_final = (SCORING.replace("your probability", "your final probability")
+                     .replace("your label", "your final label"))
+    if api.no_training:
+        return {"system": SYSTEM_UNTRAINED.format(
+                    name=k, d=len(labels), names=", ".join(labels), other=api.other(k),
+                    own=", ".join(labels), other_feats=", ".join(other), T=api.T, cap=api.cap,
+                    scoring_final=scoring_final, ex1=labels[0], ex2=labels[1 % len(labels)],
+                    ex3=labels[-1]),
+                "solo": "", "partner": ""}
     system = SYSTEM.format(name=k, d=len(labels), names=", ".join(labels),
                            budget=api.budget[k], page=api.page_size, ex1=labels[0],
                            ex2=labels[1 % len(labels)], ex3=labels[-1])

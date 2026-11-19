@@ -50,7 +50,8 @@ def query_info(env: BooleanCopulaEnv, X: np.ndarray) -> dict:
 
 
 def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
-             queries: tuple, n_train: dict | None = None) -> BooleanAPI:
+             queries: tuple, n_train: dict | None = None,
+             no_training: bool = False) -> BooleanAPI:
     """The two-twin API: each twin sees its own view of the same cases. With `n_train`
     ({"A": n_A, "B": n_B}) twin k studies the first n_k of the study cases, so the twin with
     fewer rows has a prefix of the other's (the same cases, in the same order)."""
@@ -64,6 +65,7 @@ def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
         y=yq, labels=ag["labels"], page_size=ag["page_size"], cap=ag["cap"],
         max_chars=ag["max_chars"],
         info={"solo": query_info(env, Xs), "partner": query_info(env, Xq)},
+        no_training=no_training,
     )
 
 
@@ -148,7 +150,8 @@ def main(argv: list[str] | None = None) -> Path:
         if cfg.get("single"):
             api = single_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq))
         else:
-            api = pair_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq), n_train)
+            api = pair_api(env, cfg, (Xtr, ytr), (Xs, ys), (Xq, yq), n_train,
+                           no_training=bool(cfg.get("no_training")))
         tr = run_dir / "transcripts"
         tr.mkdir(parents=True, exist_ok=True)
         lock = threading.Lock()
