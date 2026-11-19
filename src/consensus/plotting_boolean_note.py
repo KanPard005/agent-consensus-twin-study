@@ -427,3 +427,79 @@ def plot_xor_runs(rows: list[dict]):
     ax.spines["left"].set_visible(False)
     fig.tight_layout()
     return fig, ax
+
+
+def plot_xor_confidence(data: dict):
+    """XOR variants. Left: one row per variant, mean stated confidence max(p, 1 - p) of the
+    Haiku pairs' finals (slot 1, filled), Haiku single agents (slot 2, filled), and the Opus
+    pair / single agent (open diamonds, run 0), over a grey band from the Bayes confidence with
+    one twin's features to that with all features. Right: rolling confidence (solid) and
+    accuracy (dashed) of the two Haiku pairs that found the XOR, against all ten clean-XOR
+    pairs (grey); the dotted line is the all-features Bayes confidence.
+
+    Parameters
+    ----------
+    data : output of scripts/plot_boolean_note.py:xor_confidence.
+
+    Returns
+    -------
+    (fig, (ax_left, ax_right))
+    """
+    rows = data["rows"]
+    n = len(rows)
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(12, 4.3),
+                                 gridspec_kw={"width_ratios": [1.15, 1]})
+    for i, r in enumerate(rows):
+        yv = n - 1 - i
+        ax.plot([r["bayes_own"], r["bayes_all"]], [yv, yv], color=BAND, lw=6,
+                solid_capstyle="butt", zorder=1)
+        ax.plot([r["haiku_pair"]], [yv], "o", ms=8, color=SERIES[0], mec="white", zorder=4)
+        if r["haiku_single"] is not None:
+            ax.plot([r["haiku_single"]], [yv], "o", ms=8, color=SERIES[1], mec="white", zorder=4)
+        # Opus markers sit slightly above the row so they do not hide the Haiku dots.
+        for key, col in (("opus_pair", SERIES[0]), ("opus_single", SERIES[1])):
+            if r[key] is not None:
+                ax.plot([r[key]], [yv + 0.18], "D", ms=6, color=col, mfc="white", mew=1.6,
+                        zorder=5)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels([r["label"] for r in rows][::-1], fontsize=8.5, color=INK)
+    ax.set_xlim(0.48, 0.95)
+    ax.set_ylim(-0.6, n - 0.3)
+    ax.set_xlabel("mean confidence max(p, 1−p), queries 101–200")
+    ax.grid(axis="x", color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    handles = [plt.Line2D([], [], marker="o", ls="", ms=8, color=SERIES[0],
+                          label="Haiku pairs (finals)"),
+               plt.Line2D([], [], marker="o", ls="", ms=8, color=SERIES[1],
+                          label="Haiku single agents"),
+               plt.Line2D([], [], marker="D", ls="", ms=6, color=SERIES[0], mfc="white",
+                          mew=1.6, label="Opus pair"),
+               plt.Line2D([], [], marker="D", ls="", ms=6, color=SERIES[1], mfc="white",
+                          mew=1.6, label="Opus single"),
+               plt.Line2D([], [], color=BAND, lw=6,
+                          label="Bayes: one twin's features → all features")]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.4, -0.13), ncol=3,
+              fontsize=8, frameon=False)
+    ax.set_title("Stated confidence on the XOR tasks", fontsize=10, color=INK, loc="left")
+    _style(ax)
+    ax.tick_params(axis="y", length=0)
+    ax.spines["left"].set_visible(False)
+
+    w = data["window"]
+    bx.plot(data["baseline"]["t"], data["baseline"]["conf"], color=INK_2, lw=1.5,
+            label="all 10 clean-XOR pairs: confidence")
+    for (label, c), col in zip(data["curves"].items(), SERIES[2:]):
+        bx.plot(c["t"], c["conf"], color=col, lw=2, label=f"{label}: confidence")
+        bx.plot(c["t"], c["acc"], color=col, lw=1.2, ls="--", label=f"{label}: accuracy")
+    bx.axhline(0.9, color=INK_2, ls=":", lw=1)
+    bx.annotate("Bayes confidence 0.90", (102, 0.905), fontsize=8, color=INK_2)
+    bx.set_ylim(0.3, 1.02)
+    bx.set_xlabel(f"query (rolling mean over {w} queries, both twins' finals)")
+    bx.grid(color=GRID, lw=0.8)
+    bx.set_axisbelow(True)
+    bx.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2, fontsize=8,
+              frameon=False)
+    bx.set_title("Haiku pairs that found the XOR", fontsize=10, color=INK, loc="left")
+    _style(bx)
+    fig.tight_layout()
+    return fig, (ax, bx)

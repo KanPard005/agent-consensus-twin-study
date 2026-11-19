@@ -18,6 +18,7 @@ and the calibration figures:
   2026-11-19-boolean-opus-confidence.png  Opus single agent vs Opus pair: confidence, reliability
   2026-11-19-boolean-xor.png            XOR task: each Haiku pair vs its single agent
   2026-11-19-boolean-xor-conditions.png XOR variants: Haiku pairs (mean) and Opus pair vs single agents
+  2026-11-19-boolean-xor-confidence.png XOR variants: stated confidence; the two pairs that found it
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from consensus.plotting_boolean_note import (  # noqa: E402
     plot_partner_zero_models,
     plot_reliability_panels,
     plot_rule_found,
+    plot_xor_confidence,
     plot_xor_runs,
     plot_zero_clause,
 )
@@ -394,6 +396,66 @@ def xor_condition_rows() -> list[dict]:
     return out
 
 
+def _conf(p) -> float:
+    """Mean confidence max(p, 1 - p) of stated P(y = 1) values."""
+    p = np.asarray(p, float)
+    return float(np.mean(np.maximum(p, 1 - p)))
+
+
+# The two Haiku pairs that found the XOR: (label, experiment, run folder, run index).
+XOR_FOUND = [("r_cross +0.4, run 0", "boolean_haiku_xor_rcross40", "2026-11-19_17-31-10", 0),
+             ("800 vs 400, run 1", "boolean_haiku_xor_n400_800", "2026-11-19_13-43-40_5", 1)]
+
+
+def _rolling(rows: list[dict], key, window: int) -> tuple[list[int], list[float]]:
+    """Mean of key(row) over both twins' finals in the trailing `window` partner queries;
+    x is the query number (101-200)."""
+    ts = sorted({r["t"] for r in rows})
+    return ([t + 101 for t in ts],
+            [float(np.mean([key(r) for r in rows if t - window < r["t"] <= t])) for t in ts])
+
+
+def xor_confidence(window: int = 10) -> dict:
+    """XOR variants: mean stated confidence of the Haiku pairs' finals, Haiku single agents and
+    Opus pair / single agent (run 0) on queries 101-200, with accuracy alongside and the Bayes
+    confidence from one twin's features and from all features; plus rolling confidence and
+    accuracy over the partner phase for the two Haiku pairs that found the XOR, against all
+    ten clean-XOR pairs."""
+    rows = []
+    for label, hp, hs, op, os_ in XOR_CONDS:
+        pr = partner_rows(hp)
+        r = {"label": label,
+             "haiku_pair": _conf([x["p_final"] for x in pr]),
+             "haiku_pair_acc": mean(pr, lambda x: (x["p_final"] > 0.5) == x["y"]),
+             "bayes_own": _conf([x["p_bayes_solo"] for x in pr]),
+             "bayes_all": _conf([x["p_bayes_joint"] for x in pr]),
+             "haiku_single": None, "haiku_single_acc": None,
+             "opus_pair": None, "opus_pair_acc": None, "opus_single": None,
+             "opus_single_acc": None}
+        if hs:
+            sp, sy, _ = single_preds(hs)
+            r["haiku_single"] = _conf(sp)
+            r["haiku_single_acc"] = float(np.mean((np.asarray(sp) > 0.5) == np.asarray(sy)))
+        if op:
+            o = [x for x in partner_rows(op) if x["run"] == 0]
+            sp, sy, _ = single_preds(os_, run=0)
+            r |= {"opus_pair": _conf([x["p_final"] for x in o]),
+                  "opus_pair_acc": mean(o, lambda x: (x["p_final"] > 0.5) == x["y"]),
+                  "opus_single": _conf(sp),
+                  "opus_single_acc": float(np.mean((np.asarray(sp) > 0.5) == np.asarray(sy)))}
+        rows.append(r)
+    conf_key = lambda x: max(x["p_final"], 1 - x["p_final"])  # noqa: E731
+    acc_key = lambda x: float((x["p_final"] > 0.5) == x["y"])  # noqa: E731
+    curves = {}
+    for label, exp, d, run in XOR_FOUND:
+        pr = [x for x in partner_rows(exp) if x["dir"] == d and x["run"] == run]
+        t, c = _rolling(pr, conf_key, window)
+        curves[label] = {"t": t, "conf": c, "acc": _rolling(pr, acc_key, window)[1]}
+    base = _rolling(partner_rows("boolean_haiku_xor"), conf_key, window)
+    return {"rows": rows, "curves": curves, "baseline": {"t": base[0], "conf": base[1]},
+            "window": window}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -415,7 +477,7 @@ def main() -> None:
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
     calib, oconf, xor = calibration_panels(), opus_confidence(), xor_rows()
-    xconds = xor_condition_rows()
+    xconds, xconf = xor_condition_rows(), xor_confidence()
     for name, (fig, _) in (("calibration", plot_reliability_panels(calib)),
                            ("opus-confidence", plot_opus_confidence(oconf)),
                            ("xor", plot_xor_runs(xor["rows"])),
@@ -426,10 +488,11 @@ def main() -> None:
                                          "single"),
                                         ("opus_single", "Opus single agent", "Opus", "single")],
                                xlim=(0.4, 1.0),
-                               xlabel="accuracy on partner queries (same cases within a row)"))):
+                               xlabel="accuracy on partner queries (same cases within a row)")),
+                           ("xor-confidence", plot_xor_confidence(xconf))):
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
-    numbers = {"xor_conditions": xconds, "xor": xor, "calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
+    numbers = {"xor_confidence": xconf, "xor_conditions": xconds, "xor": xor, "calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
                "opus": opus, "opus_zero": opus_zero,
                "opus_rule": {"bayes": rule["bayes"], "either_sure": rule["either_sure"],
                              "found": {k: c["found"] for k, c in rule["curves"].items()}}}
