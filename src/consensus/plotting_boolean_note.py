@@ -379,3 +379,49 @@ def plot_opus_confidence(d: dict):
                bbox_to_anchor=(0.5, -0.02))
     fig.tight_layout(rect=(0, 0.07, 1, 1))
     return fig, (a1, a2)
+
+
+def plot_xor_runs(rows: list[dict]):
+    """XOR task: one row per run, the pair's final accuracy (slot 1) and its single agent's
+    (slot 2), with the one-twin Bayes accuracy (0.5, dotted) and the all-features Bayes
+    accuracy on those cases (grey tick).
+
+    Parameters
+    ----------
+    rows : list of {"run", "pair", "single", "bayes_all"} (accuracies in [0, 1]).
+
+    Returns
+    -------
+    (fig, ax)
+    """
+    n = len(rows)
+    fig, ax = plt.subplots(figsize=(7.2, 0.36 * n + 1.3))
+    ax.axvline(0.5, color=INK_2, lw=1, ls=":")
+    ax.annotate("Bayes, one twin (chance)", (0.5, n - 0.4), xytext=(4, 0),
+                textcoords="offset points", fontsize=8, color=INK_2)
+    for i, r in enumerate(rows):
+        yv = n - 1 - i
+        ax.plot([r["pair"], r["single"]], [yv, yv], color=BAND, lw=2, zorder=1)
+        ax.plot([r["bayes_all"]], [yv], marker="|", ms=11, mew=2, color=INK_2, zorder=2)
+        ax.plot([r["single"]], [yv], "o", ms=7, color=SERIES[1], mec="white", mew=1.2, zorder=3)
+        ax.plot([r["pair"]], [yv], "o", ms=7, color=SERIES[0], mec="white", mew=1.2, zorder=4)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels([f"run {r['run']}" for r in rows][::-1], fontsize=8.5, color=INK)
+    ax.set_xlabel("accuracy on queries 101–200")
+    ax.set_xlim(0.3, 1.0)
+    ax.set_ylim(-0.6, n - 0.1)
+    ax.grid(axis="x", color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    handles = [plt.Line2D([], [], marker="o", ls="", ms=7, color=SERIES[0],
+                          label="Haiku pair (finals)"),
+               plt.Line2D([], [], marker="o", ls="", ms=7, color=SERIES[1],
+                          label="Haiku single agent"),
+               plt.Line2D([], [], marker="|", ls="", ms=11, mew=2, color=INK_2,
+                          label="Bayes, all features")]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.45, -0.15), ncol=3,
+              fontsize=8, frameon=False)
+    _style(ax)
+    ax.tick_params(axis="y", length=0)
+    ax.spines["left"].set_visible(False)
+    fig.tight_layout()
+    return fig, ax

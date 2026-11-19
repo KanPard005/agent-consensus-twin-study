@@ -16,6 +16,7 @@ and, for the Opus follow-ups (one pair per condition, pair 0's cases unless note
 and the calibration figures:
   2026-11-19-boolean-calibration.png    Haiku reliability (openings, finals, single) per r_cross
   2026-11-19-boolean-opus-confidence.png  Opus single agent vs Opus pair: confidence, reliability
+  2026-11-19-boolean-xor.png            XOR task: each Haiku pair vs its single agent
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from consensus.plotting_boolean_note import (  # noqa: E402
     plot_partner_zero_models,
     plot_reliability_panels,
     plot_rule_found,
+    plot_xor_runs,
     plot_zero_clause,
 )
 
@@ -104,6 +106,16 @@ OPUS = [
      "boolean_opus_cnf3_single", "boolean_haiku_cnf3_single"),
     ("interleaved, ρ = 0.95", "boolean_opus_cnf3_inter_rho95", None,
      "boolean_opus_cnf3_single_rho95", "boolean_haiku_cnf3_single_rho95"),
+    # Cross-clause dependence, neutral names, rho = 0.9 (the block rows have a Haiku pair 0).
+    ("block, r_cross = +0.4", "boolean_opus_cnf3_blocks_rcross40",
+     "boolean_haiku_cnf3_blocks_rcross40", "boolean_opus_cnf3_single_rcross40",
+     "boolean_haiku_cnf3_single_rcross40"),
+    ("block, r_cross = −0.35", "boolean_opus_cnf3_blocks_rneg35", "boolean_haiku_cnf3_blocks_rneg35",
+     "boolean_opus_cnf3_single_rneg35", "boolean_haiku_cnf3_single_rneg35"),
+    ("interleaved, r_cross = +0.4", "boolean_opus_cnf3_inter_rcross40", None,
+     "boolean_opus_cnf3_single_rcross40", "boolean_haiku_cnf3_single_rcross40"),
+    ("interleaved, r_cross = −0.35", "boolean_opus_cnf3_inter_rneg35", None,
+     "boolean_opus_cnf3_single_rneg35", "boolean_haiku_cnf3_single_rneg35"),
 ]
 OPUS_SERIES = [("haiku_pair", "Haiku pair", "Haiku", "pair"),
                ("opus_pair", "Opus pair", "Opus", "pair"),
@@ -330,6 +342,20 @@ def opus_confidence() -> dict:
     return {"rows": rows, "single": reliability(*all_s), "pair": reliability(*all_p)}
 
 
+def xor_rows(pairs: str = "boolean_haiku_xor", single: str = "boolean_haiku_single_xor") -> dict:
+    """XOR task, per run: the pair's final accuracy (both twins) and the single agent's, on
+    queries 101-200, with the all-features Bayes accuracy on those cases."""
+    rows = []
+    p = partner_rows(pairs)
+    for run in sorted({r["run"] for r in p}):
+        pr = [r for r in p if r["run"] == run]
+        rows.append({"run": run, "pair": mean(pr, lambda r: r["l_final"] == r["y"]),
+                     "single": single_acc_run(single, run),
+                     "bayes_all": mean(pr, lambda r: (r["p_bayes_joint"] > 0.5) == r["y"])})
+    return {"rows": rows, "pair": float(np.mean([r["pair"] for r in rows])),
+            "single": float(np.mean([r["single"] for r in rows]))}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -350,12 +376,13 @@ def main() -> None:
             ("opus-rule", plot_rule_found(rule["curves"], rule["bayes"], rule["either_sure"]))):
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
-    calib, oconf = calibration_panels(), opus_confidence()
+    calib, oconf, xor = calibration_panels(), opus_confidence(), xor_rows()
     for name, (fig, _) in (("calibration", plot_reliability_panels(calib)),
-                           ("opus-confidence", plot_opus_confidence(oconf))):
+                           ("opus-confidence", plot_opus_confidence(oconf)),
+                           ("xor", plot_xor_runs(xor["rows"]))):
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
-    numbers = {"calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
+    numbers = {"xor": xor, "calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
                "opus": opus, "opus_zero": opus_zero,
                "opus_rule": {"bayes": rule["bayes"], "either_sure": rule["either_sure"],
                              "found": {k: c["found"] for k, c in rule["curves"].items()}}}
