@@ -1,0 +1,35 @@
+# Block split with dependence across clauses (Kanad, 2026-11-19): 10 Haiku pairs (pilot: pair 0).
+# y = (x1 or x2) and (x3 or x4) and (x5 or x6), flipped w.p. 0.1. Gaussian copula with r_within = 0.5
+# and r_cross = 0.4 (binary phi about 0.33 within, 0.26 across), so a twin's own features now
+# predict the partner's clause. p_pi = 0.5 recalibrates the common clause probability so that
+# P(pi = 1) stays 0.5 (a fixed p_clause would drift it to 0.60).
+# Uninformative names (as configs/boolean_opus_cnf3_inter_neutral_rho95.yaml): A sees
+# a1, a2, a3 = x1, x2, x3; B sees b1, b2, b3 = x6, x4, x5 (B's columns shuffled), so the clauses
+# are (a1 or a2), (a3 or b2), (b3 or b1). Names and order differ from the earlier block runs.
+# 400 study rows, 100 solo and 100 partner queries.
+experiment: boolean_haiku_cnf3_blocks_rcross40
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5]]
+  views: {A: [0, 1, 2], B: [5, 3, 4]}
+  r_within: 0.5
+  r_cross: 0.4
+  p_pi: 0.5
+  rho: 0.9
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10

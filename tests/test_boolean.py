@@ -197,3 +197,18 @@ def test_clause_noise_is_calibrated_and_concentrated():
     assert np.array_equal(X, X_u)
     assert np.mean((env.p_joint(X) > 0.5) == y) == pytest.approx(0.9, abs=0.005)
 
+
+
+def test_p_pi_recalibration_with_cross_correlation():
+    """With r_cross > 0 the fixed p_clause = 0.5^(1/3) gives P(pi = 1) > 0.5; p_pi = 0.5 solves
+    for the clause probability that restores it, and leaves the r_cross = 0 case unchanged."""
+    kw = dict(clauses=[[0, 1], [2, 3], [4, 5]], views={"A": [0, 1, 2], "B": [3, 4, 5]},
+              n_mc=200_000)
+    drift = BooleanCopulaEnv(r_cross=0.4, p_clause=0.5 ** (1 / 3), **kw)
+    assert drift.p_pi > 0.55
+    env = BooleanCopulaEnv(r_cross=0.4, p_pi=0.5, **kw)
+    _, pi, _ = env.sample(200_000, np.random.default_rng(6))
+    assert np.mean(pi) == pytest.approx(0.5, abs=0.005)
+    assert env.p_clause < 0.5 ** (1 / 3)
+    base = BooleanCopulaEnv(r_cross=0.0, p_pi=0.5, **kw)
+    assert base.p_clause == pytest.approx(0.5 ** (1 / 3), abs=0.003)

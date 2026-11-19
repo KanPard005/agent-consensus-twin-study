@@ -54,6 +54,11 @@ class BooleanCopulaEnv:
     noise_clause : int or None
         None: flip y with probability 1 - rho (uniform label noise). k: flip only clause k's value,
         with eps calibrated so that P(Y = pi) = rho (see the module docstring).
+    p_pi : float or None
+        If set, p_clause is ignored and the common P(D_k = 1) is solved for so that
+        P(pi = 1) = p_pi. With r_cross = 0 the clauses are independent and p_clause =
+        p_pi^(1/K) does this; with r_cross > 0 they are positively dependent and that choice
+        gives P(pi = 1) > p_pi, so the base rate would drift with the correlation.
     """
 
     clauses: list[list[int]]
@@ -65,6 +70,7 @@ class BooleanCopulaEnv:
     n_mc: int = 1_000_000
     mc_seed: int = 12345
     noise_clause: int | None = None
+    p_pi: float | None = None
     Sigma: np.ndarray = field(init=False, repr=False)
     t: np.ndarray = field(init=False)  # threshold per feature, shape (n,)
 
@@ -87,9 +93,9 @@ class BooleanCopulaEnv:
             raise ValueError("Sigma is not positive definite for these r_within, r_cross")
         self._L = np.linalg.cholesky(self.Sigma)
         Z = self._gauss(self.n_mc, np.random.default_rng(self.mc_seed))
-        self.t = np.empty(self.n)
-        for c in self.clauses:  # D_k = 1 iff max over the clause exceeds t_k
-            self.t[c] = np.quantile(Z[:, c].max(axis=1), 1.0 - self.p_clause)
+        if self.p_pi is not None:
+            self.p_clause = self._solve_p_clause(Z, float(self.p_pi))
+        self.t = self._thresholds(Z, self.p_clause)
         X = (Z > self.t).astype(np.int8)
         self.eps = None
         if self.noise_clause is not None:
@@ -99,6 +105,24 @@ class BooleanCopulaEnv:
             if not 0.0 <= self.eps < 0.5:
                 raise ValueError(f"clause noise needs eps < 0.5, got {self.eps:.3f}")
         self._bayes_tables(X)
+
+    def _thresholds(self, Z: np.ndarray, p_clause: float) -> np.ndarray:
+        """Per-feature thresholds with P(D_k = 1) = p_clause for every clause: D_k = 1 iff the
+        clause's largest Z exceeds t_k, so t_k is the (1 - p_clause) quantile of that max."""
+        t = np.empty(self.n)
+        for c in self.clauses:
+            t[c] = np.quantile(Z[:, c].max(axis=1), 1.0 - p_clause)
+        return t
+
+    def _solve_p_clause(self, Z: np.ndarray, target: float, iters: int = 40) -> float:
+        """Bisection on the common P(D_k = 1) so that P(pi = 1) = target on the Monte Carlo
+        sample; P(pi = 1) increases with p_clause, so the root is unique."""
+        lo, hi = target, 1.0  # P(pi = 1) <= P(D_k = 1), so p_clause >= target
+        for _ in range(iters):
+            mid = 0.5 * (lo + hi)
+            p = self.pi((Z > self._thresholds(Z, mid)).astype(np.int8)).mean()
+            lo, hi = (mid, hi) if p < target else (lo, mid)
+        return 0.5 * (lo + hi)
 
     @classmethod
     def from_config(cls, cfg: dict) -> "BooleanCopulaEnv":
@@ -112,6 +136,7 @@ class BooleanCopulaEnv:
             n_mc=int(cfg.get("n_mc", 1_000_000)),
             mc_seed=int(cfg.get("mc_seed", 12345)),
             noise_clause=cfg.get("noise_clause"),
+            p_pi=cfg.get("p_pi"),
         )
 
     # ---- sampling --------------------------------------------------------------------------
