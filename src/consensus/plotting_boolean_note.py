@@ -152,7 +152,9 @@ def plot_gap_over_time(curves: dict[str, tuple[list[float], list[float]]]):
 MARKER = {"Haiku": "o", "Opus": "D"}
 
 
-def plot_models_by_condition(rows: list[dict], series: list[tuple[str, str, str, str]]):
+def plot_models_by_condition(rows: list[dict], series: list[tuple[str, str, str, str]],
+                             xlim: tuple[float, float] = (0.58, 1.0),
+                             xlabel: str = "accuracy on partner queries 101–200 (pair 0's cases)"):
     """Accuracy per condition for several (model, role) series over the one-twin → all-features
     Bayes band, like `plot_accuracy_by_condition`.
 
@@ -182,8 +184,8 @@ def plot_models_by_condition(rows: list[dict], series: list[tuple[str, str, str,
                     zorder=3 + j)
     ax.set_yticks(range(n))
     ax.set_yticklabels([r["label"] for r in rows][::-1], fontsize=8.5, color=INK)
-    ax.set_xlabel("accuracy on partner queries 101–200 (pair 0's cases)")
-    ax.set_xlim(0.58, 1.0)
+    ax.set_xlabel(xlabel)
+    ax.set_xlim(*xlim)
     ax.grid(axis="x", color=GRID, lw=0.8)
     ax.set_axisbelow(True)
     handles = [plt.Line2D([], [], marker=MARKER[m], ls="", ms=8,

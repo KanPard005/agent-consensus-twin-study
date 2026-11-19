@@ -17,6 +17,7 @@ and the calibration figures:
   2026-11-19-boolean-calibration.png    Haiku reliability (openings, finals, single) per r_cross
   2026-11-19-boolean-opus-confidence.png  Opus single agent vs Opus pair: confidence, reliability
   2026-11-19-boolean-xor.png            XOR task: each Haiku pair vs its single agent
+  2026-11-19-boolean-xor-conditions.png XOR variants: Haiku pairs (mean) and Opus pair vs single agents
 """
 
 from __future__ import annotations
@@ -356,6 +357,43 @@ def xor_rows(pairs: str = "boolean_haiku_xor", single: str = "boolean_haiku_sing
             "single": float(np.mean([r["single"] for r in rows]))}
 
 
+# XOR variants: (label, Haiku pairs, Haiku single agents, Opus pair, Opus single agent); None where
+# that run does not exist. Haiku values are means over all runs, Opus values are run 0.
+XOR_CONDS = [
+    ("2 clauses, clean (10 pairs)", "boolean_haiku_xor", "boolean_haiku_single_xor",
+     "boolean_opus_xor", "boolean_opus_single_xor"),
+    ("2 clauses, 800 vs 400 rows (10)", "boolean_haiku_xor_n400_800", None, None, None),
+    ("2 clauses, no training (10)", "boolean_haiku_xor_untrained", None, None, None),
+    ("2 clauses, r_cross = +0.4 (5)", "boolean_haiku_xor_rcross40",
+     "boolean_haiku_single_xor_rcross40", None, None),
+    ("2 clauses, r_cross = −0.35 (5)", "boolean_haiku_xor_rneg35",
+     "boolean_haiku_single_xor_rneg35", None, None),
+    ("3 clauses, block (10)", "boolean_haiku_cnf3_blocks_xor", "boolean_haiku_cnf3_single_xor",
+     "boolean_opus_cnf3_blocks_xor", "boolean_opus_cnf3_single_xor"),
+]
+
+
+def xor_condition_rows() -> list[dict]:
+    """Per XOR variant: mean final accuracy of the Haiku pairs, mean of the Haiku single agents
+    (queries 101-200), the Opus pair and single agent (run 0), and the Bayes band; the
+    one-twin Bayes accuracy equals always-majority on these tasks."""
+    out = []
+    for label, hp, hs, op, os_ in XOR_CONDS:
+        rows = partner_rows(hp)
+        o = [r for r in partner_rows(op) if r["run"] == 0] if op else []
+        hs_acc = single_acc(hs, 100) if hs else None  # stated labels, as in the log
+        out.append({
+            "label": label,
+            "haiku_pair": mean(rows, lambda r: r["l_final"] == r["y"]),
+            "haiku_single": hs_acc,
+            "opus_pair": mean(o, lambda r: r["l_final"] == r["y"]) if o else None,
+            "opus_single": single_acc_run(os_, 0) if os_ else None,
+            "bayes_own": mean(rows, lambda r: (r["p_bayes_solo"] > 0.5) == r["y"]),
+            "bayes_all": mean(rows, lambda r: (r["p_bayes_joint"] > 0.5) == r["y"]),
+        })
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -377,12 +415,21 @@ def main() -> None:
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
     calib, oconf, xor = calibration_panels(), opus_confidence(), xor_rows()
+    xconds = xor_condition_rows()
     for name, (fig, _) in (("calibration", plot_reliability_panels(calib)),
                            ("opus-confidence", plot_opus_confidence(oconf)),
-                           ("xor", plot_xor_runs(xor["rows"]))):
+                           ("xor", plot_xor_runs(xor["rows"])),
+                           ("xor-conditions", plot_models_by_condition(
+                               xconds, [("haiku_pair", "Haiku pairs (mean)", "Haiku", "pair"),
+                                        ("opus_pair", "Opus pair", "Opus", "pair"),
+                                        ("haiku_single", "Haiku single agents (mean)", "Haiku",
+                                         "single"),
+                                        ("opus_single", "Opus single agent", "Opus", "single")],
+                               xlim=(0.4, 1.0),
+                               xlabel="accuracy on partner queries (same cases within a row)"))):
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
-    numbers = {"xor": xor, "calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
+    numbers = {"xor_conditions": xconds, "xor": xor, "calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
                "opus": opus, "opus_zero": opus_zero,
                "opus_rule": {"bayes": rule["bayes"], "either_sure": rule["either_sure"],
                              "found": {k: c["found"] for k, c in rule["curves"].items()}}}
