@@ -1,0 +1,34 @@
+# Opus 5.5 version (Kanad, 2026-11-19) of configs/boolean_haiku_cnf3_single_xor.yaml, same cases.
+# Three-clause XOR, block split (Kanad, 2026-11-19): single-agent reference (all six features, same names and order).
+# y = (x1 or x2) xor (x3 or x4) xor (x5 or x6), flipped w.p. 0.1. A sees x1, x2, x3 (clause 1 and half
+# of clause 2), B sees x4, x5, x6. p_clause = 0.5 and r_cross = 0, so each twin's own features leave
+# P(y = 1) at exactly 0.5 (the clause it cannot see is a fair coin): Bayes 0.50 alone, 0.90 together.
+# Neutral names as the block runs: A sees a1, a2, a3 = x1, x2, x3; B sees b1, b2, b3 = x6, x4, x5, so
+# the clauses are (a1 or a2), (a3 or b2), (b3 or b1). 400 study rows, 100 solo and 100 partner queries.
+experiment: boolean_opus_cnf3_single_xor
+seed: 0
+n_runs: 1
+single: true
+env:
+  task: boolean
+  label: xor
+  clauses: [[0, 1], [2, 3], [4, 5]]
+  views: {A: [0, 1, 2, 5, 3, 4], B: [0, 1, 2, 5, 3, 4]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.5
+  rho: 0.9
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-opus-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, b1, b2, b3]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 20.0
+  max_continues: 10
