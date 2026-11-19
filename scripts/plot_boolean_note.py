@@ -13,6 +13,9 @@ and, for the Opus follow-ups (one pair per condition, pair 0's cases unless note
   2026-11-19-boolean-opus-accuracy.png  Opus vs Haiku pairs and single agents, three-clause task
   2026-11-19-boolean-opus-zero.png      partner's zero clause, block split, Opus vs Haiku pair
   2026-11-19-boolean-opus-rule.png      Opus pairs, interleaved rho = 0.95: when the CNF is found
+and the calibration figures:
+  2026-11-19-boolean-calibration.png    Haiku reliability (openings, finals, single) per r_cross
+  2026-11-19-boolean-opus-confidence.png  Opus single agent vs Opus pair: confidence, reliability
 """
 
 from __future__ import annotations
@@ -35,7 +38,9 @@ from consensus.plotting_boolean_note import (  # noqa: E402
     plot_accuracy_by_condition,
     plot_gap_over_time,
     plot_models_by_condition,
+    plot_opus_confidence,
     plot_partner_zero_models,
+    plot_reliability_panels,
     plot_rule_found,
     plot_zero_clause,
 )
@@ -52,6 +57,12 @@ ACCURACY = [
     ("2 clauses, mixed 2+1 split", "boolean_haiku_mixed", "boolean_haiku_single_n400_q100", 100),
     ("3 clauses, interleaved split", "boolean_haiku_cnf3_inter", "boolean_haiku_cnf3_single", 100),
     ("3 clauses, block split", "boolean_haiku_cnf3_blocks", "boolean_haiku_cnf3_single", 100),
+    ("3 clauses, block, neutral names", "boolean_haiku_cnf3_blocks_neutral",
+     "boolean_haiku_cnf3_single_neutral", 100),
+    ("3 clauses, block, neutral, r_cross = +0.4", "boolean_haiku_cnf3_blocks_rcross40",
+     "boolean_haiku_cnf3_single_rcross40", 100),
+    ("3 clauses, block, neutral, r_cross = −0.35", "boolean_haiku_cnf3_blocks_rneg35",
+     "boolean_haiku_cnf3_single_rneg35", 100),
     ("3 clauses, block, ρ = 0.75", "boolean_haiku_cnf3_blocks_rho75",
      "boolean_haiku_cnf3_single_rho75", 100),
     ("3 clauses, block, ρ = 0.75, 1600 rows", "boolean_haiku_cnf3_blocks_rho75_n1600",
@@ -63,6 +74,9 @@ ZERO = [
     ("2 clauses, 400 rows, 20+40 q", "boolean_haiku_n400"),
     ("2 clauses, 400 rows, 100+100 q", "boolean_haiku_n400_q100"),
     ("3 clauses, block, ρ = 0.9", "boolean_haiku_cnf3_blocks"),
+    ("3 clauses, block, neutral names", "boolean_haiku_cnf3_blocks_neutral"),
+    ("3 clauses, block, neutral, r_cross = +0.4", "boolean_haiku_cnf3_blocks_rcross40"),
+    ("3 clauses, block, neutral, r_cross = −0.35", "boolean_haiku_cnf3_blocks_rneg35"),
     ("3 clauses, block, ρ = 0.75", "boolean_haiku_cnf3_blocks_rho75"),
     ("3 clauses, block, ρ = 0.75, 1600 rows", "boolean_haiku_cnf3_blocks_rho75_n1600"),
     ("3 clauses, block, noise only in clause 2 (1 pair)", "boolean_haiku_cnf3_blocks_c2noise"),
@@ -98,6 +112,27 @@ OPUS_SERIES = [("haiku_pair", "Haiku pair", "Haiku", "pair"),
 # The exact CNF as the twins write it in messages: (x1|x2)&(x3|x4)&(x5|x6) and variants.
 CNF = re.compile(r"\(?\s*x1\s*(?:OR|∨|\||v)\s*x2\s*\)?\s*(?:AND|∧|&)\s*\(?\s*x3\s*(?:OR|∨|\||v)"
                  r"\s*x4\s*\)?\s*(?:AND|∧|&)\s*\(?\s*x5\s*(?:OR|∨|\||v)\s*x6", re.I)
+
+
+# Calibration: block split with neutral names at three r_cross levels (Haiku, 10 pairs each).
+CALIB = [("r_cross = −0.35", "boolean_haiku_cnf3_blocks_rneg35", "boolean_haiku_cnf3_single_rneg35"),
+         ("r_cross = 0", "boolean_haiku_cnf3_blocks_neutral", "boolean_haiku_cnf3_single_neutral"),
+         ("r_cross = +0.4", "boolean_haiku_cnf3_blocks_rcross40",
+          "boolean_haiku_cnf3_single_rcross40")]
+# Opus single agent vs Opus pair (run 0 each, same queries 101-200). One single agent per rho,
+# shared by the block and interleaved rows at that rho.
+OPUS_CONF = [
+    ("block, ρ=0.75", "boolean_opus_cnf3_blocks_rho75", "boolean_opus_cnf3_single_rho75"),
+    ("block, ρ=0.9", "boolean_opus_cnf3_blocks", "boolean_opus_cnf3_single"),
+    ("block, ρ=0.95", "boolean_opus_cnf3_blocks_rho95", "boolean_opus_cnf3_single_rho95"),
+    ("block, ρ=0.9, r_cross=+0.4", "boolean_opus_cnf3_blocks_rcross40",
+     "boolean_opus_cnf3_single_rcross40"),
+    ("block, ρ=0.9, r_cross=−0.35", "boolean_opus_cnf3_blocks_rneg35",
+     "boolean_opus_cnf3_single_rneg35"),
+    ("interleaved, ρ=0.75", "boolean_opus_cnf3_inter_rho75", "boolean_opus_cnf3_single_rho75"),
+    ("interleaved, ρ=0.9", "boolean_opus_cnf3_inter", "boolean_opus_cnf3_single"),
+    ("interleaved, ρ=0.95", "boolean_opus_cnf3_inter_rho95", "boolean_opus_cnf3_single_rho95"),
+]
 
 
 def run_dirs(exp: str) -> list[Path]:
@@ -238,6 +273,63 @@ def rule_curves(exp: str = "boolean_opus_cnf3_inter_rho95", window: int = 20) ->
             "either_sure": float(np.mean(sure))}
 
 
+def reliability(p: list[float], y: list[int], min_n: int = 15) -> dict:
+    """Bins of width 0.1 on the stated P(y = 1): mean stated value and observed share of y = 1
+    per bin with at least `min_n` predictions, the share of predictions per bin, and mean
+    confidence max(p, 1 - p)."""
+    p, y = np.asarray(p, float), np.asarray(y, float)
+    idx = np.clip(np.digitize(p, np.linspace(0, 1, 11)) - 1, 0, 9)
+    keep = [b for b in range(10) if (idx == b).sum() >= min_n]
+    return {"x": [float(p[idx == b].mean()) for b in keep],
+            "y": [float(y[idx == b].mean()) for b in keep],
+            "share": [float((idx == b).mean()) for b in range(10)],
+            "conf": float(np.mean(np.maximum(p, 1 - p))), "n": int(len(p))}
+
+
+def single_preds(exp: str, run: int | None = None, K: int = 100) -> tuple[list, list, list]:
+    """Single agents' (p, y, Bayes p) on queries K+1.. ; all runs, or one."""
+    p, y, pb = [], [], []
+    for d in run_dirs(exp):
+        for f in (d / "transcripts").glob("run*_solo.jsonl"):
+            if run is not None and f.name != f"run{run}_solo.jsonl":
+                continue
+            for r in map(json.loads, f.read_text().splitlines()):
+                if r["i"] >= K:
+                    p.append(r["p"]), y.append(r["y"]), pb.append(r["p_bayes_joint"])
+    return p, y, pb
+
+
+def calibration_panels() -> list[dict]:
+    """Per r_cross level: reliability of the Haiku pairs' openings and finals and of the single
+    agents (queries 101-200)."""
+    out = []
+    for label, pairs, single in CALIB:
+        rows = partner_rows(pairs)
+        y = [r["y"] for r in rows]
+        sp, sy, _ = single_preds(single)
+        out.append({"label": label,
+                    "openings": reliability([r["p_open"] for r in rows], y),
+                    "finals": reliability([r["p_final"] for r in rows], y),
+                    "single": reliability(sp, sy)})
+    return out
+
+
+def opus_confidence() -> dict:
+    """Opus single agent vs Opus pair (both twins' finals) on the same queries: mean confidence
+    per condition, Bayes confidence, and reliability pooled over the conditions."""
+    rows, all_s, all_p = [], ([], []), ([], [])
+    for label, pair, single in OPUS_CONF:
+        pr = [r for r in partner_rows(pair) if r["run"] == 0]
+        sp, sy, spb = single_preds(single, run=0)
+        rows.append({"label": label,
+                     "single": float(np.mean(np.maximum(sp, 1 - np.asarray(sp)))),
+                     "pair": mean(pr, lambda r: max(r["p_final"], 1 - r["p_final"])),
+                     "bayes": float(np.mean(np.maximum(spb, 1 - np.asarray(spb))))})
+        all_s[0].extend(sp), all_s[1].extend(sy)
+        all_p[0].extend(r["p_final"] for r in pr), all_p[1].extend(r["y"] for r in pr)
+    return {"rows": rows, "single": reliability(*all_s), "pair": reliability(*all_p)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -258,7 +350,12 @@ def main() -> None:
             ("opus-rule", plot_rule_found(rule["curves"], rule["bayes"], rule["either_sure"]))):
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
-    numbers = {"accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
+    calib, oconf = calibration_panels(), opus_confidence()
+    for name, (fig, _) in (("calibration", plot_reliability_panels(calib)),
+                           ("opus-confidence", plot_opus_confidence(oconf))):
+        fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
+                    facecolor="#fcfcfb")
+    numbers = {"calibration": calib, "opus_confidence": oconf, "accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
                "opus": opus, "opus_zero": opus_zero,
                "opus_rule": {"bayes": rule["bayes"], "either_sure": rule["either_sure"],
                              "found": {k: c["found"] for k, c in rule["curves"].items()}}}

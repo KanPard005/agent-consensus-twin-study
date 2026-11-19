@@ -282,3 +282,100 @@ def plot_rule_found(curves: dict[str, dict], bayes: float, either_sure: float):
     _style(ax)
     fig.tight_layout()
     return fig, ax
+
+
+# ---- calibration -------------------------------------------------------------------------
+def _reliability_axes(ax) -> None:
+    ax.plot([0, 1], [0, 1], ls=":", c=INK_2, lw=1)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("stated P(y = 1) (bins of 0.1)")
+    ax.grid(color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    _style(ax)
+
+
+def plot_reliability_panels(panels: list[dict]):
+    """Reliability diagrams, one panel per condition, for the Haiku pairs' openings (grey,
+    dashed), the pairs' finals (slot 1) and the single agents (slot 2).
+
+    Parameters
+    ----------
+    panels : list of {"label", "openings", "finals", "single"}, each a reliability dict
+        {"x", "y"} from scripts/plot_boolean_note.py.
+
+    Returns
+    -------
+    (fig, axes)
+    """
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.7 * len(panels), 3.9), sharey=True)
+    series = [("openings", "Haiku pairs, openings", INK_2, "--"),
+              ("finals", "Haiku pairs, finals", SERIES[0], "-"),
+              ("single", "Haiku single agent", SERIES[1], "-")]
+    for ax, pnl in zip(axes, panels):
+        _reliability_axes(ax)
+        for key, lab, c, ls in series:
+            ax.plot(pnl[key]["x"], pnl[key]["y"], marker="o", ms=5, c=c, ls=ls, lw=1.6,
+                    mec="white", mew=0.8, label=lab)
+        ax.set_title(pnl["label"], fontsize=10, color=INK)
+    axes[0].set_ylabel("observed share with y = 1")
+    h, lab = axes[0].get_legend_handles_labels()
+    fig.legend(h, lab, loc="lower center", ncol=3, fontsize=8.5, frameon=False,
+               bbox_to_anchor=(0.5, -0.02))
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    return fig, axes
+
+
+def plot_opus_confidence(d: dict):
+    """Left: mean confidence max(p, 1 - p) of the Opus single agent (slot 2) and the Opus pair's
+    finals (slot 1) per condition, with the Bayes confidence as a grey tick. Right: reliability
+    of both, pooled over the conditions, with the share of predictions per bin as bars.
+
+    Parameters
+    ----------
+    d : {"rows": [{"label", "single", "pair", "bayes"}], "single": reliability dict,
+        "pair": reliability dict}
+
+    Returns
+    -------
+    (fig, axes)
+    """
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11.5, 4.4), gridspec_kw={"width_ratios": [1.25, 1]})
+    rows, n = d["rows"], len(d["rows"])
+    for i, r in enumerate(rows):
+        yv = n - 1 - i
+        a1.plot([min(r["single"], r["pair"]), max(r["single"], r["pair"])], [yv, yv], color=BAND,
+                lw=3, zorder=1)
+        a1.plot([r["bayes"]], [yv], marker="|", ms=13, mew=2, color=INK_2, zorder=2)
+        a1.plot([r["single"]], [yv], "D", ms=7, color=SERIES[1], mec="white", mew=1.2, zorder=3)
+        a1.plot([r["pair"]], [yv], "D", ms=7, color=SERIES[0], mec="white", mew=1.2, zorder=4)
+    a1.set_yticks(range(n))
+    a1.set_yticklabels([r["label"] for r in rows][::-1], fontsize=8.5, color=INK)
+    a1.set_xlabel("mean confidence, max(p, 1 − p), queries 101–200")
+    a1.set_xlim(0.6, 1.0)
+    a1.grid(axis="x", color=GRID, lw=0.8)
+    a1.set_axisbelow(True)
+    _style(a1)
+    a1.tick_params(axis="y", length=0)
+    a1.spines["left"].set_visible(False)
+    a1.set_title("Confidence by condition (one pair, one single agent each)", fontsize=10,
+                 color=INK)
+    _reliability_axes(a2)
+    centers = [0.05 + 0.1 * b for b in range(10)]
+    for key, c, dx in (("single", SERIES[1], -0.02), ("pair", SERIES[0], 0.02)):
+        a2.plot(d[key]["x"], d[key]["y"], "-D", c=c, ms=6, lw=1.8, mec="white", mew=1)
+        a2.bar([x + dx for x in centers], [0.4 * s for s in d[key]["share"]], width=0.035,
+               color=c, alpha=0.35, zorder=0)
+    a2.set_ylabel("observed share with y = 1")
+    a2.set_title("Reliability, all conditions pooled\n(bars: share of predictions per bin)",
+                 fontsize=10, color=INK)
+    handles = [plt.Line2D([], [], marker="D", ls="", ms=7, color=SERIES[1],
+                          label=f"Opus single agent (n = {d['single']['n']})"),
+               plt.Line2D([], [], marker="D", ls="", ms=7, color=SERIES[0],
+                          label=f"Opus pair, finals of both twins (n = {d['pair']['n']})"),
+               plt.Line2D([], [], marker="|", ls="", ms=13, mew=2, color=INK_2,
+                          label="Bayes, all features")]
+    fig.legend(handles=handles, loc="lower center", ncol=3, fontsize=8.5, frameon=False,
+               bbox_to_anchor=(0.5, -0.02))
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    return fig, (a1, a2)
