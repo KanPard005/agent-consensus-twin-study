@@ -22,6 +22,11 @@ whenever another clause is 0, and all label noise sits in cases that clause k de
 calibrated so that P(Y = pi) = rho overall: a flip of D_k changes y only when every other clause
 is 1, so eps = (1 - rho) / P(all D_j = 1, j != k). The same uniform draw decides the flip as in
 the uniform model, so the features of every case are unchanged.
+
+XOR label (`label = "xor"`, Kanad 2026-11-19): pi(X) = D_1 xor D_2 xor ... (parity of the clause
+ORs) instead of their AND. With two clauses, p_clause = 0.5 and r_cross = 0, each twin's own
+clause says nothing about y (P(y = 1 | own features) = 0.5 exactly), so pooling probabilities
+gains nothing; only exchanging the clause values does.
 """
 
 from __future__ import annotations
@@ -59,6 +64,8 @@ class BooleanCopulaEnv:
         P(pi = 1) = p_pi. With r_cross = 0 the clauses are independent and p_clause =
         p_pi^(1/K) does this; with r_cross > 0 they are positively dependent and that choice
         gives P(pi = 1) > p_pi, so the base rate would drift with the correlation.
+    label : {"and", "xor"}
+        How the clause ORs combine into pi: their AND (the CNF) or their parity.
     """
 
     clauses: list[list[int]]
@@ -71,6 +78,7 @@ class BooleanCopulaEnv:
     mc_seed: int = 12345
     noise_clause: int | None = None
     p_pi: float | None = None
+    label: str = "and"
     Sigma: np.ndarray = field(init=False, repr=False)
     t: np.ndarray = field(init=False)  # threshold per feature, shape (n,)
 
@@ -83,6 +91,12 @@ class BooleanCopulaEnv:
             raise ValueError("the twins' views must together cover every feature")
         if not 0.5 < self.rho <= 1.0:
             raise ValueError("rho must be in (0.5, 1]")
+        if self.label not in ("and", "xor"):
+            raise ValueError(f"label must be 'and' or 'xor', got {self.label!r}")
+        if self.label == "xor" and (self.noise_clause is not None or self.p_pi is not None):
+            # Both calibrations assume the AND: a flip of one clause changes y only when the
+            # others are 1, and P(pi = 1) increases with p_clause. Neither holds for parity.
+            raise ValueError("label 'xor' supports neither noise_clause nor p_pi")
         self.clause_of = np.empty(self.n, int)
         for k, c in enumerate(self.clauses):
             self.clause_of[c] = k
@@ -137,6 +151,7 @@ class BooleanCopulaEnv:
             mc_seed=int(cfg.get("mc_seed", 12345)),
             noise_clause=cfg.get("noise_clause"),
             p_pi=cfg.get("p_pi"),
+            label=str(cfg.get("label", "and")),
         )
 
     # ---- sampling --------------------------------------------------------------------------
@@ -145,8 +160,12 @@ class BooleanCopulaEnv:
         return rng.standard_normal((m, self.n)) @ self._L.T
 
     def pi(self, X: np.ndarray) -> np.ndarray:
-        """The noiseless label AND_k OR_{i in k} X_i, shape (m,), for X of shape (m, n)."""
-        return np.all([X[:, c].max(axis=1) for c in self.clauses], axis=0).astype(np.int8)
+        """The noiseless label, shape (m,), for X of shape (m, n): AND_k OR_{i in k} X_i, or the
+        parity of the clause ORs for label = "xor"."""
+        D = self.clause_values(X)
+        if self.label == "xor":
+            return (D.sum(axis=1) % 2).astype(np.int8)
+        return D.all(axis=1).astype(np.int8)
 
     def clause_values(self, X: np.ndarray) -> np.ndarray:
         """D_k for every clause, shape (m, n_clauses)."""

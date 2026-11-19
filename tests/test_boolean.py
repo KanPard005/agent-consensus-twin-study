@@ -212,3 +212,21 @@ def test_p_pi_recalibration_with_cross_correlation():
     assert env.p_clause < 0.5 ** (1 / 3)
     base = BooleanCopulaEnv(r_cross=0.0, p_pi=0.5, **kw)
     assert base.p_clause == pytest.approx(0.5 ** (1 / 3), abs=0.003)
+
+
+def test_xor_label_gives_no_solo_information():
+    """XOR of two independent clauses with P(D = 1) = 0.5: P(pi = 1) = 0.5, each twin's own
+    features leave P(y = 1) at 0.5 (Bayes alone = chance), all features give rho."""
+    env = BooleanCopulaEnv(clauses=[[0, 1, 2], [3, 4, 5]], views={"A": [0, 1, 2], "B": [5, 3, 4]},
+                           p_clause=0.5, label="xor", n_mc=200_000)
+    X, pi, y = env.sample(100_000, np.random.default_rng(8))
+    D = env.clause_values(X)
+    assert np.array_equal(pi, (D[:, 0] ^ D[:, 1]).astype(np.int8))
+    assert np.mean(pi) == pytest.approx(0.5, abs=0.006)
+    for k in "AB":
+        assert np.allclose(env.p_solo(env.view(X[:200], k), k), 0.5, atol=0.01)
+    ref = env.references(m=100_000)
+    assert ref["acc_joint"] == pytest.approx(0.9, abs=0.005)
+    with pytest.raises(ValueError):
+        BooleanCopulaEnv(clauses=[[0, 1, 2], [3, 4, 5]], views={"A": [0, 1, 2], "B": [3, 4, 5]},
+                         label="xor", p_pi=0.5, n_mc=10_000)
