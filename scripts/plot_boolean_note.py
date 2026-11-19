@@ -9,12 +9,17 @@ transcripts/run<r>_solo.jsonl) and writes three PNGs plus the numbers behind the
   2026-11-19-boolean-accuracy.png   pairs vs single agent vs Bayes, per condition
   2026-11-19-boolean-zero.png       own vs partner's zero clause, per condition
   2026-11-19-boolean-gap.png        finals minus Bayes over the 100 partner queries, per split
+and, for the Opus follow-ups (one pair per condition, pair 0's cases unless noted):
+  2026-11-19-boolean-opus-accuracy.png  Opus vs Haiku pairs and single agents, three-clause task
+  2026-11-19-boolean-opus-zero.png      partner's zero clause, block split, Opus vs Haiku pair
+  2026-11-19-boolean-opus-rule.png      Opus pairs, interleaved rho = 0.95: when the CNF is found
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -29,6 +34,9 @@ from boolean_analysis import load_partner  # noqa: E402
 from consensus.plotting_boolean_note import (  # noqa: E402
     plot_accuracy_by_condition,
     plot_gap_over_time,
+    plot_models_by_condition,
+    plot_partner_zero_models,
+    plot_rule_found,
     plot_zero_clause,
 )
 
@@ -68,6 +76,30 @@ GAP = [
 ]
 
 
+# Opus follow-ups: (label, Opus pair, Haiku pair (run 0) or None, Opus single, Haiku single)
+OPUS = [
+    ("block, ρ = 0.75", "boolean_opus_cnf3_blocks_rho75", "boolean_haiku_cnf3_blocks_rho75",
+     "boolean_opus_cnf3_single_rho75", "boolean_haiku_cnf3_single_rho75"),
+    ("block, ρ = 0.9", "boolean_opus_cnf3_blocks", "boolean_haiku_cnf3_blocks",
+     "boolean_opus_cnf3_single", "boolean_haiku_cnf3_single"),
+    ("block, ρ = 0.95", "boolean_opus_cnf3_blocks_rho95", "boolean_haiku_cnf3_blocks_rho95",
+     "boolean_opus_cnf3_single_rho95", "boolean_haiku_cnf3_single_rho95"),
+    ("interleaved, ρ = 0.75", "boolean_opus_cnf3_inter_rho75", None,
+     "boolean_opus_cnf3_single_rho75", "boolean_haiku_cnf3_single_rho75"),
+    ("interleaved, ρ = 0.9", "boolean_opus_cnf3_inter", "boolean_haiku_cnf3_inter",
+     "boolean_opus_cnf3_single", "boolean_haiku_cnf3_single"),
+    ("interleaved, ρ = 0.95", "boolean_opus_cnf3_inter_rho95", None,
+     "boolean_opus_cnf3_single_rho95", "boolean_haiku_cnf3_single_rho95"),
+]
+OPUS_SERIES = [("haiku_pair", "Haiku pair", "Haiku", "pair"),
+               ("opus_pair", "Opus pair", "Opus", "pair"),
+               ("haiku_single", "Haiku single agent", "Haiku", "single"),
+               ("opus_single", "Opus single agent", "Opus", "single")]
+# The exact CNF as the twins write it in messages: (x1|x2)&(x3|x4)&(x5|x6) and variants.
+CNF = re.compile(r"\(?\s*x1\s*(?:OR|∨|\||v)\s*x2\s*\)?\s*(?:AND|∧|&)\s*\(?\s*x3\s*(?:OR|∨|\||v)"
+                 r"\s*x4\s*\)?\s*(?:AND|∧|&)\s*\(?\s*x5\s*(?:OR|∨|\||v)\s*x6", re.I)
+
+
 def run_dirs(exp: str) -> list[Path]:
     return [d for d in sorted((RES / exp).glob("20*")) if (d / "summary.json").exists()]
 
@@ -88,6 +120,17 @@ def single_acc(exp: str, K: int) -> float:
                 if r["i"] >= K:
                     ok.append(r["label"] == r["y"])
     return float(np.mean(ok))
+
+
+def single_acc_run(exp: str, run: int, K: int = 100) -> float | None:
+    """One single agent's label accuracy on queries K+1.. ; None if that run does not exist."""
+    ok = []
+    for d in run_dirs(exp):
+        f = d / "transcripts" / f"run{run}_solo.jsonl"
+        if f.exists():
+            ok += [r["label"] == r["y"] for r in map(json.loads, f.read_text().splitlines())
+                   if r["i"] >= K]
+    return float(np.mean(ok)) if ok else None
 
 
 def mean(rows: list[dict], fn) -> float:
@@ -137,6 +180,64 @@ def gap_curves(block: int = 20) -> dict:
     return out
 
 
+def opus_rows() -> list[dict]:
+    """Pair 0 per condition: Opus and Haiku pairs' final accuracy, both single agents, and the
+    Bayes band on those cases."""
+    out = []
+    for label, opus, haiku, opus_single, haiku_single in OPUS:
+        o = [r for r in partner_rows(opus) if r["run"] == 0]
+        h = [r for r in partner_rows(haiku) if r["run"] == 0] if haiku else []
+        out.append({
+            "label": label,
+            "opus_pair": mean(o, lambda r: r["l_final"] == r["y"]),
+            "haiku_pair": mean(h, lambda r: r["l_final"] == r["y"]) if h else None,
+            "opus_single": single_acc_run(opus_single, 0),
+            "haiku_single": single_acc_run(haiku_single, 0),
+            "bayes_own": mean(o, lambda r: (r["p_bayes_solo"] > 0.5) == r["y"]),
+            "bayes_all": mean(o, lambda r: (r["p_bayes_joint"] > 0.5) == r["y"]),
+        })
+    return out
+
+
+def opus_zero_rows() -> list[dict]:
+    """Block split, pair 0: finals (and openings) saying 1 when only the partner's clause is 0."""
+    out = []
+    for label, opus, haiku, *_ in OPUS[:3]:
+        row = {"label": label}
+        opening = []
+        for model, exp in (("Opus", opus), ("Haiku", haiku)):
+            p = [r for r in partner_rows(exp)
+                 if r["run"] == 0 and r["d_own"] == 1 and r["d_other"] == 0]
+            row[model] = mean(p, lambda r: r["l_final"])
+            row[f"n_{model}"] = len(p)
+            opening += [r["l_open"] for r in p]
+        row["opening"] = float(np.mean(opening))
+        out.append(row)
+    return out
+
+
+def rule_curves(exp: str = "boolean_opus_cnf3_inter_rho95", window: int = 20) -> dict:
+    """Per Opus pair: rolling final accuracy (both twins) over the partner queries and the first
+    query at which a message states the exact CNF; plus the pooled Bayes and 'either sure'
+    accuracies (say 1 iff one twin's three features are all 1)."""
+    curves, bayes, sure = {}, [], []
+    for d in run_dirs(exp):
+        for f in sorted((d / "transcripts").glob("run?.jsonl")):
+            recs = [json.loads(line) for line in f.read_text().splitlines()]
+            acc = [np.mean([r["final"][k][1] == r["y"] for k in "AB"]) for r in recs]
+            roll = np.convolve(acc, np.ones(window) / window, mode="valid")
+            found = next((r["number"] for r in recs for m in r["messages"]
+                          if CNF.search(m["text"])), None)
+            curves[f"pair {f.stem[3:]}"] = {"x": [r["number"] for r in recs][window - 1:],
+                                            "acc": roll.tolist(), "found": found}
+            for r in recs:
+                x = r["x_full"]
+                bayes.append((r["p_bayes_joint"] > 0.5) == r["y"])
+                sure.append(int((x[0] and x[2] and x[4]) or (x[1] and x[3] and x[5])) == r["y"])
+    return {"curves": dict(sorted(curves.items())), "bayes": float(np.mean(bayes)),
+            "either_sure": float(np.mean(sure))}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -150,7 +251,17 @@ def main() -> None:
                            ("gap", plot_gap_over_time(gap))):
         fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
                     facecolor="#fcfcfb")
-    numbers = {"accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()}}
+    opus, opus_zero, rule = opus_rows(), opus_zero_rows(), rule_curves()
+    for name, (fig, _) in (
+            ("opus-accuracy", plot_models_by_condition(opus, OPUS_SERIES)),
+            ("opus-zero", plot_partner_zero_models(opus_zero)),
+            ("opus-rule", plot_rule_found(rule["curves"], rule["bayes"], rule["either_sure"]))):
+        fig.savefig(out / f"2026-11-19-boolean-{name}.png", dpi=160, bbox_inches="tight",
+                    facecolor="#fcfcfb")
+    numbers = {"accuracy": acc, "zero": zero, "gap": {k: list(v) for k, v in gap.items()},
+               "opus": opus, "opus_zero": opus_zero,
+               "opus_rule": {"bayes": rule["bayes"], "either_sure": rule["either_sure"],
+                             "found": {k: c["found"] for k, c in rule["curves"].items()}}}
     (out / "boolean-note-numbers.json").write_text(json.dumps(numbers, indent=1))
     print(json.dumps(numbers, indent=1))
 

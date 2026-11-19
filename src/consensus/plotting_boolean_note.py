@@ -144,3 +144,141 @@ def plot_gap_over_time(curves: dict[str, tuple[list[float], list[float]]]):
     _style(ax)
     fig.tight_layout()
     return fig, ax
+
+
+# ---- Opus vs Haiku (one pair each) --------------------------------------------------------
+# Colour stays the role (pairs = slot 1, single agent = slot 2, as in the figures above); the
+# model is the marker (Haiku circle, Opus diamond), so identity never rests on colour alone.
+MARKER = {"Haiku": "o", "Opus": "D"}
+
+
+def plot_models_by_condition(rows: list[dict], series: list[tuple[str, str, str, str]]):
+    """Accuracy per condition for several (model, role) series over the one-twin → all-features
+    Bayes band, like `plot_accuracy_by_condition`.
+
+    Parameters
+    ----------
+    rows : list of dicts with "label", "bayes_own", "bayes_all" and one key per series
+        (value None when that run does not exist), top to bottom.
+    series : list of (key, legend label, model, role) with model in {"Haiku", "Opus"} and
+        role in {"pair", "single"}.
+
+    Returns
+    -------
+    (fig, ax)
+    """
+    n = len(rows)
+    fig, ax = plt.subplots(figsize=(7.2, 0.5 * n + 1.3))
+    for i, r in enumerate(rows):
+        yv = n - 1 - i
+        ax.plot([r["bayes_own"], r["bayes_all"]], [yv, yv], color=BAND, lw=7,
+                solid_capstyle="round", zorder=1)
+        ax.plot([r["bayes_all"]], [yv], marker="|", ms=12, mew=2, color=INK_2, zorder=2)
+        for j, (key, _, model, role) in enumerate(series):
+            if r.get(key) is None:
+                continue
+            ax.plot([r[key]], [yv], MARKER[model], ms=8 if model == "Haiku" else 7,
+                    color=SERIES[0] if role == "pair" else SERIES[1], mec="white", mew=1.5,
+                    zorder=3 + j)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels([r["label"] for r in rows][::-1], fontsize=8.5, color=INK)
+    ax.set_xlabel("accuracy on partner queries 101–200 (pair 0's cases)")
+    ax.set_xlim(0.58, 1.0)
+    ax.grid(axis="x", color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    handles = [plt.Line2D([], [], marker=MARKER[m], ls="", ms=8,
+                          color=SERIES[0] if role == "pair" else SERIES[1], label=lab)
+               for _, lab, m, role in series]
+    handles += [plt.Line2D([], [], color=BAND, lw=7, label="Bayes: one twin's features → all"),
+                plt.Line2D([], [], marker="|", ls="", ms=12, mew=2, color=INK_2,
+                           label="Bayes, all features")]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.45, -0.12), ncol=3,
+              fontsize=8, frameon=False)
+    _style(ax)
+    ax.tick_params(axis="y", length=0)
+    ax.spines["left"].set_visible(False)
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_partner_zero_models(rows: list[dict]):
+    """Block split, pair 0's cases: share of finals saying 1 when only the partner's fully seen
+    clause is 0, for the Haiku and the Opus pair at each rho; the grey tick is the share at the
+    opening (before any talk), which both models share.
+
+    Parameters
+    ----------
+    rows : list of {"label", "Haiku", "Opus", "opening"} (shares in [0, 1]).
+
+    Returns
+    -------
+    (fig, ax)
+    """
+    n = len(rows)
+    fig, ax = plt.subplots(figsize=(7.2, 0.5 * n + 1.5))
+    for i, r in enumerate(rows):
+        yv = n - 1 - i
+        ax.plot([r["opening"]], [yv], marker="|", ms=12, mew=2, color=INK_2, zorder=1)
+        for model in ("Haiku", "Opus"):
+            ax.plot([r[model]], [yv], MARKER[model], ms=8 if model == "Haiku" else 7,
+                    color=SERIES[0], mec="white", mew=1.5, zorder=2)
+            ax.annotate(f"{r[model]:.2f}", (r[model], yv), xytext=(0, 9),
+                        textcoords="offset points", ha="center", fontsize=7.5, color=INK_2)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels([r["label"] for r in rows][::-1], fontsize=8.5, color=INK)
+    ax.set_xlabel("share of finals saying 1 when only the partner's clause is 0")
+    ax.set_xlim(-0.04, 0.8)
+    ax.set_ylim(-0.6, n - 0.3)
+    ax.grid(axis="x", color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    handles = [plt.Line2D([], [], marker=MARKER[m], ls="", ms=8, color=SERIES[0],
+                          label=f"{m} pair (final)") for m in ("Haiku", "Opus")]
+    handles.append(plt.Line2D([], [], marker="|", ls="", ms=12, mew=2, color=INK_2,
+                              label="before talk (opening)"))
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.45, -0.3), ncol=3,
+              fontsize=8, frameon=False)
+    _style(ax)
+    ax.tick_params(axis="y", length=0)
+    ax.spines["left"].set_visible(False)
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_rule_found(curves: dict[str, dict], bayes: float, either_sure: float):
+    """Opus pairs, interleaved split at rho = 0.95: rolling accuracy of the finals over the
+    partner queries, with a mark where the pair first states the exact CNF.
+
+    Parameters
+    ----------
+    curves : {label: {"x": query numbers, "acc": rolling accuracy, "found": query or None}}
+    bayes, either_sure : accuracy of the all-features Bayes rule and of "say 1 if either twin's
+        features are all 1" on the same queries (both pairs pooled).
+
+    Returns
+    -------
+    (fig, ax)
+    """
+    fig, ax = plt.subplots(figsize=(7.2, 3.4))
+    for val, lab, ls in ((bayes, "Bayes, all features", ":"),
+                         (either_sure, "'either sure' rule", "--")):
+        ax.axhline(val, color=INK_2, lw=1, ls=ls)
+        ax.annotate(lab, (101, val), xytext=(0, 3), textcoords="offset points", fontsize=8,
+                    color=INK_2)
+    for (label, c), ls in zip(curves.items(), ("-", (0, (4, 2)))):
+        ax.plot(c["x"], c["acc"], color=SERIES[0], lw=2, ls=ls)
+        ax.annotate(label, (c["x"][-1], c["acc"][-1]), xytext=(6, 0),
+                    textcoords="offset points", va="center", fontsize=8, color=INK)
+        if c["found"] is not None:
+            ax.axvline(c["found"], color=SERIES[0], lw=1, ls=ls, alpha=0.6)
+            ax.annotate(f"states the CNF\n(query {c['found']})", (c["found"], 0.62),
+                        xytext=(-4, 0), textcoords="offset points", ha="right", fontsize=7.5,
+                        color=INK_2)
+    ax.set_xlim(100, 222)
+    ax.set_ylim(0.6, 1.02)
+    ax.set_xlabel("query (partner phase is 101–200)")
+    ax.set_ylabel("finals, rolling accuracy (20 queries)")
+    ax.grid(axis="y", color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    _style(ax)
+    fig.tight_layout()
+    return fig, ax
