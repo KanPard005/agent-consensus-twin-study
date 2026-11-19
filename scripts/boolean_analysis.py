@@ -39,7 +39,12 @@ sys.path.insert(0, str(ROOT / "src"))
 from consensus.boolean_data import log_loss  # noqa: E402
 from consensus.plotting_boolean import plot_boolean_summary  # noqa: E402
 
-FEATURE_VALUE = re.compile(r"\bx\d+\s*[=:]\s*[01]\b")
+# A twin's own feature values in a message: "x3=1", "a2: 0", or a whole triple such as
+# "a = 110", "b=(1,0,0)", "x1..x3 = 0,1,0" (the forms the twins use; the single-name form alone
+# missed the triples and undercounted, e.g. 0.07 vs 0.13 in the uncorrelated block run).
+FEATURE_VALUE = re.compile(
+    r"\b[a-z]\d+\s*[=:]\s*[01]\b"
+    r"|\b[a-z](?:\d\s*(?:-|–|\.\.)\s*[a-z]?\d)?\s*=\s*\(?\s*[01]\s*,?\s*[01]\s*,?\s*[01]")
 
 
 def seen_clauses(run_dir: Path) -> dict[str, list[int]]:
