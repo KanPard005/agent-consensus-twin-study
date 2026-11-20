@@ -77,6 +77,8 @@ def pair_stats(d: Path, r: int) -> dict:
     text = "\n".join(m["text"] for m in brief)
     calls = {k: load_jsonl(tr / f"run{r}_calls_{k}.jsonl") for k in "AB"}
     part = {k: [c for c in calls[k] if c["phase"] in ("query", "brief")] for k in "AB"}
+    seen = {k: "\n".join(c["result"] for c in calls[k] if c["tool"] == "read_messages")
+            for k in "AB"}
     with_vals = {k: {c["args"].get("name") for c in part[k] if c["tool"] == "add_case"
                      and c["args"].get("values")} for k in "AB"}
     return {
@@ -104,6 +106,11 @@ def pair_stats(d: Path, r: int) -> dict:
         "count_joint": {k: sum(c["tool"] == "count" and c["args"].get("name") in with_vals[k]
                                for c in part[k]) for k in "AB"},
         "rule_query": rule_q,
+        # messages (round and queries) never shown in a read_messages result of the recipient
+        "messages_total": len(brief) + sum(len(q["messages"]) for q in recs),
+        "messages_unread": sum(
+            m["text"][:150] not in seen[("B" if m["from"] == "A" else "A")]
+            for m in brief + [m for q in recs for m in q["messages"]]),
         # first partner query (displayed number) with own feature values in a message, and the
         # first message (round = 0) that asks about the other twin's features
         "values_query": next((q["number"] for q in recs for m in q["messages"]
@@ -123,7 +130,9 @@ def main() -> None:
             "brief": (ROOT / "results", "boolean_haiku_xor_brief"),
             "announced": (ROOT / "results", "boolean_haiku_xor_brief_announced"),
             "other": (ROOT / "results", "boolean_haiku_xor_other"),
-            "other_round": (ROOT / "results", "boolean_haiku_xor_other_round")}
+            "other_round": (ROOT / "results", "boolean_haiku_xor_other_round"),
+            "other_notify": (ROOT / "results", "boolean_haiku_xor_other_notify"),
+            "other_round_notify": (ROOT / "results", "boolean_haiku_xor_other_round_notify")}
     out = {}
     for arm, (res, exp) in arms.items():
         rows = [pair_stats(d, r) for r, d in pair_dirs(res, exp)]

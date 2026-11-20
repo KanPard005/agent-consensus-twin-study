@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from consensus.plotting_boolean_note import plot_xor_briefing  # noqa: E402
 
 NAMES = {"none": "no conversation", "brief": "conversation", "announced": "announced conversation",
-         "other": "other agent", "other_round": "other agent with round"}
+         "other": "other agent", "other_round": "other agent with round",
+         "other_notify": "other agent, notified", "other_round_notify": "with round, notified"}
 
 
 def main() -> None:
