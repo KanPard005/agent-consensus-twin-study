@@ -11,6 +11,7 @@ Per run (pair) r the study cases, solo queries and partner queries come from the
   transcripts/run<r>_solo.jsonl          one record per solo prediction (both twins)
   transcripts/run<r>_calls_<twin>.jsonl  every tool call and its result
   transcripts/run<r>_messages_<twin>.jsonl  the twin's text, thinking and tool uses
+  transcripts/run<r>_brief.json          the conversation before the partner queries (`briefing`)
 and summary.json at the end of each run.
 """
 
@@ -75,6 +76,8 @@ def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
         max_chars=ag["max_chars"],
         info={"solo": query_info(env, Xs), "partner": query_info(env, Xq)},
         no_training=no_training, study_labels=study_labels, new_at=new_at,
+        briefing=bool(cfg.get("briefing")),
+        briefing_announced=bool(cfg.get("briefing_announced")),
     )
 
 
@@ -184,6 +187,9 @@ def main(argv: list[str] | None = None) -> Path:
                                        max_continues=ag["max_continues"], live_dir=tr, run=r)
                  for k in ("A" if cfg.get("single") else "AB")}
         run_pair(api, twins)
+        if api.briefing:  # the conversation before the partner queries (messages with q = -1)
+            (tr / f"run{r}_brief.json").write_text(json.dumps(
+                [m for m in api.messages if m["q"] == -1], indent=2))
         summary[f"run{r}"] = {
             "cost_usd": sum(tw.cost_usd for tw in twins.values()),
             "tokens": {k: tw.tokens for k, tw in twins.items()},
@@ -194,6 +200,7 @@ def main(argv: list[str] | None = None) -> Path:
             "long_twin": long,
             "queries_resolved": int(api.resolved.sum()),
             "messages": len(api.messages),
+            "brief_messages": sum(m["q"] == -1 for m in api.messages),
             "datasets": {k: {n: len(d["rows"]) for n, d in api.datasets[k].items()}
                          for k in "AB"},
             "scores": summarize(api),

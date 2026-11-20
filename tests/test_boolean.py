@@ -2,6 +2,7 @@
 partner-phase waiting logic (scripted twins, no model)."""
 
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -325,3 +326,92 @@ def test_new_features_appear_and_are_announced_once(new_at):
 def test_old_prompts_keep_their_count_example():
     api = make_api()
     assert "`x1 == 1 and not (x2 == 1 or x3 == 1)`" in prompts(api, "A")["system"]
+
+
+def make_brief_api(announced=False, K=2, T=2, n=4):
+    env = make_env()
+    rng = np.random.default_rng(1)
+    Xtr, _, ytr = env.sample(n, rng)
+    Xs, _, ys = env.sample(K, rng)
+    Xq, _, yq = env.sample(T, rng)
+    api = BooleanAPI({k: (env.view(Xtr, k), ytr) for k in "AB"},
+                     {"x": {k: env.view(Xs, k) for k in "AB"}, "y": ys},
+                     {k: env.view(Xq, k) for k in "AB"}, yq, LABELS, page_size=4, cap=30,
+                     briefing=True, briefing_announced=announced)
+    for k in "AB":
+        pr = prompts(api, k)
+        api.solo_intro[k], api.partner_intro[k] = pr["solo"], pr["partner"]
+    return api
+
+
+def test_briefing_conversation_then_queries():
+    """A finishes its solo queries first and talks; B arrives, answers, and A ends the talk by
+    calling next_query; B's next send is refused and the partner queries run as usual."""
+    api = make_brief_api()
+    out, b_ready = {}, threading.Event()
+
+    def solo(k):
+        while not api.get_training_data(k, 4).startswith("You have seen all"):
+            pass
+        api.start_queries(k)
+        for _ in range(api.K):
+            api.next_query(k)
+            res = api.submit_prediction(k, 0.5, 1)
+        assert "talk freely once" in res and api.phase[k] == "brief"
+
+    def queries(k):
+        while True:
+            if "run is over" in api.next_query(k):
+                return
+            api.submit_opening(k, 0.5, 1)
+            if "run is over" in api.submit_prediction(k, 0.5, 1):
+                return
+
+    def twin_a():
+        solo("A")
+        assert "not started" in api.submit_opening("A", 0.5, 1)
+        assert api.send_message("A", "I learned nothing from a1-a3") == "Message sent."
+        txt = api.read_messages("A")  # waits for B to arrive and answer
+        assert 'Partner: "same here"' in txt
+        b_ready.wait(5)
+        assert "Query 3" in api.next_query("A")  # ends the conversation for both
+        out["A"] = True
+        api.submit_opening("A", 0.5, 1)
+        api.submit_prediction("A", 0.5, 1)
+        queries("A")
+
+    def twin_b():
+        solo("B")
+        assert "I learned nothing" in api.read_messages("B")
+        api.send_message("B", "same here")
+        b_ready.set()
+        while not api.brief_over:
+            time.sleep(0.01)
+        assert "ended the conversation" in api.send_message("B", "wait")
+        assert "ended the conversation" in api.read_messages("B")
+        out["B"] = True
+        queries("B")
+
+    th = [threading.Thread(target=f) for f in (twin_a, twin_b)]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(timeout=20)
+    assert out == {"A": True, "B": True} and api.resolved.all()
+    brief = [m for m in api.messages if m["q"] == -1]
+    assert [m["from"] for m in brief] == ["A", "B"]
+    assert all(m["q"] >= 0 for m in api.messages[2:])
+
+
+def test_briefing_prompts_and_unchanged_baseline():
+    base = make_api()
+    plain = make_brief_api(announced=False)
+    ann = make_brief_api(announced=True)
+    for k in "AB":
+        p0, p1, p2 = prompts(base, k), prompts(plain, k), prompts(ann, k)
+        assert "talk freely" not in p0["system"] + p0["partner"]
+        assert p1["system"].replace("6 labelled", "4 labelled") == p0["system"].replace(
+            "6 labelled", "4 labelled")
+        assert "talk freely once" in p2["system"] and "talk freely once" not in p1["system"]
+        assert p1["partner"] == p2["partner"]
+        assert p1["partner"].endswith("at most 30 per query.")

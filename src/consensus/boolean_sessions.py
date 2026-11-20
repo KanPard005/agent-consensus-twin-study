@@ -23,6 +23,14 @@ fewer features than it later sees (`study_labels`). The others appear at the sol
 are announced in that phase's intro with the wording the partner intro uses for the partner
 ("may have information that ... do not"). Training rows have no value for them.
 
+Briefing (Kanad, 2026-11-19, XOR follow-up): with `briefing`, the twins can talk freely once
+after the solo queries and before the first partner query, about each other's study and solo
+queries (what each sees and has learned). The conversation uses send_message / read_messages
+with no case and no opening; it ends as soon as either twin calls next_query. With
+`briefing_announced` the system prompt says from the start that there will be a partner and
+this conversation (otherwise the twin learns of both only at the partner intro, as before).
+Prompts of runs without `briefing` are unchanged.
+
 The waiting logic of the partner phase is that of `consensus.sessions.ConsensusAPI` with the
 individual team rule; the session loop is `consensus.sessions.TwinSession`.
 """
@@ -79,6 +87,29 @@ do not stop before that."""
 NEW_FEATURES = """ From now on each case also has the features {new}, which the labelled cases \
 you studied did not have: your features are now {own}. The new features may have information \
 that your other features do not."""
+
+# Briefing (Kanad, 2026-11-19): the purpose of the conversation is stated in Kanad's terms ("to
+# understand their individual training and solo query phases, along with what they see and
+# learn") and nothing else: no hint about what to share or how to combine.
+BRIEF_ANNOUNCE = """
+
+After studying you will answer {K} queries on your own. Then you will meet a partner: another \
+instance of the same AI model as you, which has its own features and also studies labelled cases \
+and answers queries on its own. Before you start answering queries together, you and your partner \
+will be able to talk freely once, to understand each other's study and solo queries: what each of \
+you sees and what each of you has learned."""
+
+BRIEF_INTRO = """
+
+Before the queries start, you and your partner can talk freely once, to understand each other's \
+study and solo queries: what each of you sees and what each of you has learned. send_message \
+sends a message, and read_messages shows your partner's new messages (it waits until your partner \
+sends something new, ends the conversation, or is also waiting). The conversation ends as soon as \
+one of you calls next_query, which starts the queries."""
+
+BRIEF_START = ("Start the conversation with send_message or read_messages, and call next_query "
+               "when you are done talking. You can make at most {cap} tool calls in this "
+               "conversation, and at most {cap} per query.")
 
 SCORING = """\
 the log loss of your probability (minus the natural log of the probability you gave to the true \
@@ -316,7 +347,8 @@ class BooleanAPI:
                  page_size: int = 40, cap: int = 40, max_chars: int = 2000,
                  info: dict | None = None, single: int | None = None,
                  no_training: bool = False, study_labels: dict | None = None,
-                 new_at: str = "solo") -> None:
+                 new_at: str = "solo", briefing: bool = False,
+                 briefing_announced: bool = False) -> None:
         # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
         # which all run in the solo phase; after query K1 the agent gets `single_break`, after
         # query K the run is over. Only twin A acts.
@@ -345,6 +377,15 @@ class BooleanAPI:
         self.no_training = bool(no_training)  # also read by TwinSession
         if self.no_training and (self.K or any(self.budget.values()) or single):
             raise ValueError("no_training needs no study rows, no solo queries and no single agent")
+        # Briefing: phase "brief" between the solo queries and the first partner query; it is
+        # over for both twins once either calls next_query (`brief_over`).
+        self.briefing = bool(briefing)
+        self.briefing_announced = bool(briefing_announced)
+        if self.briefing_announced and not self.briefing:
+            raise ValueError("briefing_announced needs briefing")
+        if self.briefing and (self.no_training or single):
+            raise ValueError("briefing needs a pair with a study phase")
+        self.brief_over = False
         self.phase = {k: "query" if self.no_training else "train" for k in "AB"}
         self.n_seen = {k: 0 for k in "AB"}
         self.solo_i = {k: -1 for k in "AB"}
@@ -388,10 +429,15 @@ class BooleanAPI:
     def call(self, k: str, tool: str, args: dict, fn) -> str:
         """Run one tool call for twin k with the per-query cap, and report it."""
         key, phase = self.number(k), self.phase[k]  # before the call (it can change the phase)
+        if phase == "brief":
+            key = -1  # the briefing conversation has its own count
         with self.cond:
             n = self.calls[k].get(key, 0) + 1
             self.calls[k][key] = n
-        if key > 0 and n > self.cap and tool not in ("submit_prediction", "next_query"):
+        if key == -1 and n > self.cap and tool != "next_query":
+            res = ("Tool-call limit for the conversation reached: call next_query to start the "
+                   "queries.")
+        elif key > 0 and n > self.cap and tool not in ("submit_prediction", "next_query"):
             res = (f"Tool-call limit for query {key} reached: call submit_prediction now (or "
                    "next_query if the query is resolved).")
         else:
@@ -432,7 +478,7 @@ class BooleanAPI:
         if self.phase[k] == "solo":
             i = self.solo_i[k]
             return i + 1 if i >= 0 and not np.isnan(self.solo_pred[k][i, 0]) else i
-        if self.phase[k] in ("query", "done"):
+        if self.phase[k] in ("brief", "query", "done"):
             q = self.q[k]
             if q < 0:  # solo queries over, no partner query yet
                 return self.K
@@ -493,7 +539,7 @@ class BooleanAPI:
             if self.K > 0:
                 self.phase[k] = "solo"
                 return self.solo_intro[k].format(n_train=self.n_seen[k])
-            self.phase[k] = "query"
+            self.phase[k] = "brief" if self.briefing else "query"
             self.cond.notify_all()
             return self.partner_intro[k].format(n_train=self.n_seen[k])
 
@@ -633,6 +679,10 @@ class BooleanAPI:
                 return "Error: call start_queries first."
             if self.phase[k] == "done":
                 return "The run is over. Stop."
+            if self.phase[k] == "brief":  # this twin ends the conversation for both
+                self.phase[k] = "query"
+                self.brief_over = True
+                self.cond.notify_all()
             if self.phase[k] == "solo":
                 i = self.solo_i[k]
                 if i >= 0 and np.isnan(self.solo_pred[k][i, 0]):
@@ -663,6 +713,9 @@ class BooleanAPI:
     def _in_query(self, k: str) -> str | None:
         if self.phase[k] == "solo":
             return "Error: while you answer queries on your own, use next_query and submit_prediction."
+        if self.phase[k] == "brief":
+            return ("Error: the queries have not started yet; call next_query when you are done "
+                    "talking.")
         if self.phase[k] != "query" or self.q[k] < 0:
             return "Error: no current query (call next_query)."
         if self.resolved[self.q[k]]:
@@ -680,8 +733,45 @@ class BooleanAPI:
             self.cond.notify_all()
             return f"Opening p = {float(p):g}, label {int(label)} recorded for query {self.number(k)}."
 
+    # ---- briefing conversation (no case; messages stored with q = -1) ------------------------
+    def _brief_send(self, k: str, text: str) -> str:
+        if self.brief_over:
+            return ("Error: your partner has ended the conversation; call next_query to start "
+                    "the queries.")
+        text = str(text)[: self.max_chars]
+        self.inbox[self.other(k)].append((-1, text))
+        self.messages.append({"q": -1, "from": k, "text": text, "order": len(self.messages),
+                              "time": time.time()})
+        self.cond.notify_all()
+        return "Message sent."
+
+    def _brief_read(self, k: str) -> str:
+        o = self.other(k)
+        self.waiting[k] = "read"
+        self.cond.notify_all()
+        # Wake on a new message, the end of the conversation, or both twins waiting (a twin
+        # still in its solo queries cannot be waiting, so a fast twin waits for it to arrive).
+        self.cond.wait_for(
+            lambda: self._unread(k, -1)
+            or self.brief_over
+            or (self.waiting[o] == "read" and not self._unread(o, -1))
+            or self.done(o)
+        )
+        self.waiting[k] = None
+        new = self._unread(k, -1)
+        self.n_read[k] += len(new)
+        lines = [f'Partner: "{t}"' for t in new] or ["No new messages."]
+        if self.brief_over:
+            lines.append("Your partner has ended the conversation; call next_query to start the "
+                         "queries.")
+        elif not new and self.waiting[o] == "read":
+            lines.append("Your partner is also waiting for a message.")
+        return "\n".join(lines)
+
     def send_message(self, k: str, text: str) -> str:
         with self.cond:
+            if self.phase[k] == "brief":
+                return self._brief_send(k, text)
             if err := self._in_query(k):
                 return err
             q = self.q[k]
@@ -702,6 +792,8 @@ class BooleanAPI:
 
     def read_messages(self, k: str) -> str:
         with self.cond:
+            if self.phase[k] == "brief":
+                return self._brief_read(k)
             if err := self._in_query(k):
                 return err
             q, o = self.q[k], self.other(k)
@@ -790,7 +882,7 @@ class BooleanAPI:
             return res + " That was the last query: the run is over. Stop."
         if i < self.K - 1:
             return res + " Call next_query for the next case."
-        self.phase[k] = "query"
+        self.phase[k] = "brief" if self.briefing else "query"
         self.cond.notify_all()
         return (res + f" That was the last of your {self.K} queries on your own.\n\n"
                 + self.partner_intro[k].format(n_train=self.n_seen[k]))
@@ -822,6 +914,15 @@ def build_tools(api: BooleanAPI, k: str):
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     docs = {n: d.format(page=api.page_size) for n, d in TOOL_DOCS.items()}
+    if api.briefing:  # the talk tools also work in the conversation before the partner queries
+        docs["send_message"] = ("Partner phase (the conversation before the partner queries, "
+                                "and the partner queries): send a message to your partner.")
+        docs["read_messages"] = ("Partner phase (the conversation before the partner queries, "
+                                 "and the partner queries): show your partner's new messages "
+                                 "(and, during a query, its opening); waits until there is "
+                                 "something new.")
+        docs["next_query"] = ("Get the features of the next case (after the conversation before "
+                              "the partner queries, this ends the conversation).")
 
     def text(s: str) -> dict:
         return {"content": [{"type": "text", "text": s}]}
@@ -940,6 +1041,9 @@ def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
     system = SYSTEM.format(name=k, d=len(studied), names=", ".join(studied),
                            budget=api.budget[k], page=api.page_size,
                            example=count_example(studied))
+    if api.briefing_announced:  # after the study paragraph, before the data API
+        head, sep, tail = system.partition("\n\nData API:")
+        system = head + BRIEF_ANNOUNCE.format(K=api.K) + sep + tail
     if api.single:
         if api.new_features(k):
             raise ValueError("study_labels is not supported for the single agent")
@@ -961,6 +1065,15 @@ def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
         n_train="{n_train}", K=api.K, other=api.other(k), own=", ".join(labels),
         other_feats=", ".join(other), T=api.T, first=api.K + 1, last=api.K + api.T,
         cap=api.cap, scoring_final=scoring_final, new_features="" if in_solo else note)
+    if api.briefing:
+        # The conversation goes right after the partner is introduced, and the closing line
+        # ("Call next_query to begin.") says how to start and end it instead.
+        head, sep, tail = partner.partition("\n\nThere are ")
+        partner = head + BRIEF_INTRO + sep + tail
+        last = f"You can make at most {api.cap} tool calls per query. Call next_query to begin."
+        if not partner.endswith(last):
+            raise ValueError("unexpected partner intro ending")
+        partner = partner[: -len(last)] + BRIEF_START.format(cap=api.cap)
     return {"system": system, "solo": solo, "partner": partner}
 
 

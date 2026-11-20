@@ -1,0 +1,40 @@
+# Briefing arm (Kanad, 2026-11-19): as boolean_haiku_xor, but after the solo queries the twins can
+# talk freely once before the first partner query, "to understand each other's study and solo
+# queries: what each of you sees and what each of you has learned". Announced only at the partner
+# intro (the twins learn of the partner then, as before). Same cases as boolean_haiku_xor.
+# XOR task (Kanad, 2026-11-19): 10 Haiku pairs.
+# y = (x1 or x2 or x3) xor (x4 or x5 or x6), flipped w.p. 0.1. Clean split: A sees one clause, B the
+# other. p_clause = 0.5 and r_cross = 0 (r_within = 0.5), so each twin's own features leave
+# P(y = 1) at exactly 0.5: Bayes is 0.50 alone and 0.90 together. Averaging probabilities gains
+# nothing; only exchanging the clause values (one bit each) helps. Neutral names: A sees
+# a1, a2, a3 = x1, x2, x3; B sees b1, b2, b3 = x6, x4, x5 (B's columns shuffled).
+# 400 study rows, 100 solo and 100 partner queries.
+experiment: boolean_haiku_xor_brief
+seed: 0
+n_runs: 1
+
+env:
+  task: boolean
+  label: xor
+  clauses: [[0, 1, 2], [3, 4, 5]]
+  views: {A: [0, 1, 2], B: [5, 3, 4]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_clause: 0.5
+  rho: 0.9
+
+briefing: true
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3], B: [b1, b2, b3]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10
