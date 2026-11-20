@@ -503,3 +503,46 @@ def plot_xor_confidence(data: dict):
     _style(bx)
     fig.tight_layout()
     return fig, (ax, bx)
+
+
+def plot_xor_briefing(arms: list[dict], bayes: float = 0.90):
+    """XOR briefing arms. Left: each pair's final accuracy on the 100 partner queries (dots,
+    mean as a bar), with chance and the all-features Bayes accuracy. Right: share of pairs that
+    still send messages at each partner query (a pair counts until its last message).
+
+    arms: [{"name", "acc": [per pair], "last_msg": [last partner query with a message, 0..T],
+    "T"}], drawn in this order with SERIES slots 1, 3, 4."""
+    import numpy as np
+
+    colors = [SERIES[0], SERIES[2], SERIES[3]]
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9.2, 3.4), gridspec_kw={"width_ratios": [1, 1.4]})
+    for ax in (a1, a2):
+        _style(ax)
+        ax.grid(axis="y", color=GRID, lw=0.8)
+        ax.set_axisbelow(True)
+    for ref, lab in ((0.5, "chance"), (bayes, "Bayes, all features")):
+        a1.axhline(ref, color=INK_2, lw=1, ls=":")
+        a1.text(-0.45, ref + 0.01, lab, color=INK_2, fontsize=8, ha="left", va="bottom")
+    rng = np.random.default_rng(0)
+    for i, (arm, c) in enumerate(zip(arms, colors)):
+        acc = np.asarray(arm["acc"])
+        a1.scatter(i + rng.uniform(-0.12, 0.12, len(acc)), acc, s=34, color=c,
+                   edgecolor="white", lw=1, zorder=3)
+        a1.plot([i - 0.25, i + 0.25], [acc.mean()] * 2, color=INK, lw=2, zorder=4)
+        a1.text(i + 0.28, acc.mean(), f"{acc.mean():.2f}", color=INK, fontsize=8, va="center")
+    a1.set_xticks(range(len(arms)), [a["name"].replace(" ", "\n", 1) for a in arms], fontsize=8.5)
+    a1.set_xlim(-0.5, len(arms) - 0.3)
+    a1.set_ylim(0.3, 0.95)
+    a1.set_ylabel("final accuracy, partner queries")
+    for arm, c in zip(arms, colors):
+        T = arm["T"]
+        t = np.arange(1, T + 1)
+        alive = [(np.asarray(arm["last_msg"]) >= s).mean() for s in t]
+        a2.step(t, alive, where="post", color=c, lw=2, label=arm["name"])
+    a2.set_ylim(0, 1.05)
+    a2.set_xlim(1, arms[0]["T"])
+    a2.set_xlabel("partner query")
+    a2.set_ylabel("share of pairs still sending messages")
+    a2.legend(frameon=False, fontsize=8.5, loc="lower left", labelcolor=INK)
+    fig.tight_layout()
+    return fig
