@@ -70,10 +70,21 @@ def pair_stats(d: Path, r: int) -> dict:
     hit = np.array([fin[k][:, 1] == y for k in "AB"])
     acc = (hit & ok).sum(0) / ok.sum(0)
     conf = np.nanmean([np.maximum(fin[k][:, 0], 1 - fin[k][:, 0]) for k in "AB"], axis=0)
-    rule_q = next((q["number"] for q in recs for m in q["messages"] if RULE.search(m["text"])),
-                  None)
     brief_p = tr / f"run{r}_brief.json"
     brief = json.loads(brief_p.read_text()) if brief_p.exists() else []
+    # With late_messages the query records miss the messages sent after a query was resolved;
+    # run<r>_messages_all.json has every message, so the per-query lists are rebuilt from it.
+    all_p = tr / f"run{r}_messages_all.json"
+    if all_p.exists():
+        msgs = json.loads(all_p.read_text())
+        brief = [m for m in msgs if m["q"] < 0]
+        by_q = {}
+        for m in msgs:
+            by_q.setdefault(m["q"], []).append(m)
+        recs = [{**q, "messages": by_q.get(q["t"], [])} for q in recs]
+    n_late = sum(m.get("late", False) for m in brief + [m for q in recs for m in q["messages"]])
+    rule_q = next((q["number"] for q in recs for m in q["messages"] if RULE.search(m["text"])),
+                  None)
     text = "\n".join(m["text"] for m in brief)
     calls = {k: load_jsonl(tr / f"run{r}_calls_{k}.jsonl") for k in "AB"}
     part = {k: [c for c in calls[k] if c["phase"] in ("query", "brief")] for k in "AB"}
@@ -106,6 +117,10 @@ def pair_stats(d: Path, r: int) -> dict:
         "count_joint": {k: sum(c["tool"] == "count" and c["args"].get("name") in with_vals[k]
                                for c in part[k]) for k in "AB"},
         "rule_query": rule_q,
+        "late_messages": n_late,
+        # send_message calls rejected because the query was already resolved
+        "rejected_late": sum(c["tool"] == "send_message" and "resolved" in c["result"]
+                             for k in "AB" for c in calls[k]),
         # messages (round and queries) never shown in a read_messages result of the recipient
         "messages_total": len(brief) + sum(len(q["messages"]) for q in recs),
         "messages_unread": sum(
@@ -132,7 +147,9 @@ def main() -> None:
             "other": (ROOT / "results", "boolean_haiku_xor_other"),
             "other_round": (ROOT / "results", "boolean_haiku_xor_other_round"),
             "other_notify": (ROOT / "results", "boolean_haiku_xor_other_notify"),
-            "other_round_notify": (ROOT / "results", "boolean_haiku_xor_other_round_notify")}
+            "other_round_notify": (ROOT / "results", "boolean_haiku_xor_other_round_notify"),
+            "other_lossless": (ROOT / "results", "boolean_haiku_xor_other_lossless"),
+            "other_round_lossless": (ROOT / "results", "boolean_haiku_xor_other_round_lossless")}
     out = {}
     for arm, (res, exp) in arms.items():
         rows = [pair_stats(d, r) for r, d in pair_dirs(res, exp)]

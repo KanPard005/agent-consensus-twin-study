@@ -21,7 +21,8 @@ from consensus.plotting_boolean_note import plot_xor_briefing  # noqa: E402
 
 NAMES = {"none": "no conversation", "brief": "conversation", "announced": "announced conversation",
          "other": "other agent", "other_round": "other agent with round",
-         "other_notify": "other agent, notified", "other_round_notify": "with round, notified"}
+         "other_notify": "other agent, notified", "other_round_notify": "with round, notified",
+         "other_lossless": "other agent, lossless", "other_round_lossless": "with round, lossless"}
 
 
 def main() -> None:
