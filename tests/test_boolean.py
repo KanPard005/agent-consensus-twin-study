@@ -482,3 +482,69 @@ def test_other_agent_results_use_neutral_wording():
     assert "partner" not in joined.lower()
     assert 'Other agent: "hello"' in joined and "the other agent's p" in joined
     assert "with the other agent" in joined and "ended the round" in joined
+
+
+@pytest.mark.parametrize("other_agent", [False, True])
+def test_notifications_keep_late_messages(other_agent):
+    """B submits its final first; A then sends a message and submits. B is notified in the
+    result of its submit, and reads the message in the next query, marked with when it was
+    sent. Without notifications that message would be lost."""
+    env = make_env()
+    rng = np.random.default_rng(3)
+    Xtr, _, ytr = env.sample(4, rng)
+    Xq, _, yq = env.sample(2, rng)
+    api = BooleanAPI({k: (env.view(Xtr, k), ytr) for k in "AB"},
+                     {"x": {k: np.zeros((0, 3), int) for k in "AB"}, "y": np.zeros(0, int)},
+                     {k: env.view(Xq, k) for k in "AB"}, yq, LABELS, page_size=4, cap=30,
+                     other_agent=other_agent, notify_messages=True)
+    for k in "AB":
+        pr = prompts(api, k)
+        api.solo_intro[k], api.partner_intro[k] = pr["solo"], pr["partner"]
+        assert "the results of your tool calls say so" in pr["partner"]
+    out = {}
+
+    def run(k, fn):
+        return api.call(k, "x", {}, fn)  # through call(), which appends the notification
+
+    def twin_a():
+        while not api.get_training_data("A", 4).startswith("You have seen all"):
+            pass
+        api.start_queries("A")
+        run("A", lambda: api.next_query("A"))
+        run("A", lambda: api.submit_opening("A", 0.5, 1))
+        while not api._submitted("B", 0):
+            time.sleep(0.01)
+        run("A", lambda: api.send_message("A", "late news"))
+        run("A", lambda: api.submit_prediction("A", 0.5, 1))
+        run("A", lambda: api.next_query("A"))
+        run("A", lambda: api.submit_opening("A", 0.5, 1))
+        run("A", lambda: api.submit_prediction("A", 0.5, 1))
+
+    def twin_b():
+        while not api.get_training_data("B", 4).startswith("You have seen all"):
+            pass
+        api.start_queries("B")
+        run("B", lambda: api.next_query("B"))
+        run("B", lambda: api.submit_opening("B", 0.5, 1))
+        out["submit"] = run("B", lambda: api.submit_prediction("B", 0.5, 1))
+        run("B", lambda: api.next_query("B"))
+        run("B", lambda: api.submit_opening("B", 0.5, 1))
+        out["read"] = api.call("B", "read_messages", {}, lambda: api.read_messages("B"))
+        out["after"] = run("B", lambda: api.submit_prediction("B", 0.5, 1))
+
+    th = [threading.Thread(target=f) for f in (twin_a, twin_b)]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(timeout=20)
+    who = "the other agent" if other_agent else "your partner"
+    assert f"Notification: 1 new message from {who}" in out["submit"]
+    assert '(sent during query 1): "late news"' in out["read"]
+    assert "Notification" not in out["after"] and api.resolved.all()
+
+
+def test_no_notifications_by_default():
+    api = make_api()
+    assert api.unread_note("A") == ""
+    for k in "AB":
+        assert "say so" not in prompts(api, k)["partner"]

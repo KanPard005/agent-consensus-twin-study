@@ -166,6 +166,11 @@ CONTINUE_OTHER = ("The run is not over yet. Continue working through the tools (
                   "submit_opening, communicating with the other agent, submit_prediction) until a "
                   "tool result says the run is over.")
 
+# Told in the partner intro when notifications are on (inserted before "At any time ...").
+NOTIFY_INTRO = ("\n\nWhen there are new messages from {who} that you have not read, the results "
+                "of your tool calls say so; read_messages shows them, including messages sent "
+                "during an earlier query.")
+
 # Wording of the tool results: the default ("partner", unchanged from earlier runs) and the
 # minimal framing, where the twin only knows there is "the other agent".
 WORDS = {
@@ -413,7 +418,8 @@ class BooleanAPI:
                  info: dict | None = None, single: int | None = None,
                  no_training: bool = False, study_labels: dict | None = None,
                  new_at: str = "solo", briefing: bool = False,
-                 briefing_announced: bool = False, other_agent: bool = False) -> None:
+                 briefing_announced: bool = False, other_agent: bool = False,
+                 notify_messages: bool = False) -> None:
         # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
         # which all run in the solo phase; after query K1 the agent gets `single_break`, after
         # query K the run is over. Only twin A acts.
@@ -458,6 +464,10 @@ class BooleanAPI:
             raise ValueError("other_agent needs a pair with a study phase, without "
                              "briefing_announced")
         self.w = WORDS["other" if self.other_agent else "partner"]
+        # Message notifications (Kanad, 2026-11-19): every tool result says when there are
+        # unread messages, and no message is lost when a query ends; the read pointer runs over
+        # the whole inbox instead of restarting at each query.
+        self.notify = bool(notify_messages)
         self.phase = {k: "query" if self.no_training else "train" for k in "AB"}
         self.n_seen = {k: 0 for k in "AB"}
         self.solo_i = {k: -1 for k in "AB"}
@@ -514,6 +524,8 @@ class BooleanAPI:
                    "next_query if the query is resolved).")
         else:
             res = fn()
+        if tool != "read_messages":
+            res += self.unread_note(k)
         if self.on_call is not None:
             self.on_call(k, {"phase": phase, "query": key, "tool": tool, "args": args,
                              "result": res[:3000], "time": time.time()})
@@ -777,7 +789,9 @@ class BooleanAPI:
             self.cond.notify_all()
             o = self.other(k)
             self.cond.wait_for(lambda: self.want[o] >= nq or self.q[o] >= nq or self.done(o))
-            self.q[k], self.n_read[k] = nq, 0
+            self.q[k] = nq
+            if not self.notify:  # unread messages of an earlier query are dropped
+                self.n_read[k] = 0
             feats = ", ".join(f"{lab}={int(v)}" for lab, v in zip(self.labels[k], self.qx[k][nq]))
             return (f"Query {self.K + nq + 1} ({self.w['pq']} {nq + 1} of {self.T}). Your "
                     f"features: {feats}.")
@@ -830,9 +844,8 @@ class BooleanAPI:
             or self.done(o)
         )
         self.waiting[k] = None
-        new = self._unread(k, -1)
-        self.n_read[k] += len(new)
-        lines = [f'{self.w["Partner"]}: "{t}"' for t in new] or ["No new messages."]
+        new = self._take_unread(k, -1)
+        lines = new or ["No new messages."]
         if self.brief_over:
             lines.append(f"{self.w['Your partner']} has ended the {self.w['conv']}; call "
                          "next_query to start the queries.")
@@ -857,7 +870,38 @@ class BooleanAPI:
             return "Message sent."
 
     def _unread(self, k: str, q: int) -> list[str]:
-        return [t for qq, t in self.inbox[k] if qq == q][self.n_read[k]:]
+        return [t for _, t in self._unread_items(k, q)]
+
+    def _unread_items(self, k: str, q: int) -> list[tuple[int, str]]:
+        """(query index or -1 for the briefing, text) of twin k's unread messages: those of
+        query q, or with notifications every message not yet shown."""
+        if self.notify:
+            return self.inbox[k][self.n_read[k]:]
+        return [(qq, t) for qq, t in self.inbox[k] if qq == q][self.n_read[k]:]
+
+    def _take_unread(self, k: str, q: int) -> list[str]:
+        """Mark twin k's unread messages as read and format them; with notifications, a message
+        from another query (or the briefing) says when it was sent."""
+        items = self._unread_items(k, q)
+        self.n_read[k] += len(items)
+        out = []
+        for qq, t in items:
+            when = ("" if qq == q else " (sent before the queries)" if qq < 0
+                    else f" (sent during query {self.K + qq + 1})")
+            out.append(f'{self.w["Partner"]}{when}: "{t}"')
+        return out
+
+    def unread_note(self, k: str) -> str:
+        """The notification appended to twin k's tool results while it has unread messages."""
+        if not self.notify or self.phase[k] not in ("brief", "query"):
+            return ""
+        with self.cond:
+            n = len(self._unread_items(k, self.q[k]))
+        if not n:
+            return ""
+        return (f"\n\nNotification: {n} new message{'s' if n > 1 else ''} from "
+                f"{self.w['your partner']}; read_messages shows "
+                f"{'them' if n > 1 else 'it'}.")
 
     def _submitted(self, k: str, q: int) -> bool:
         return not np.isnan(self.final[k][q, 0])
@@ -882,13 +926,12 @@ class BooleanAPI:
                 or self.resolved[q]
             )
             self.waiting[k] = None
-            new = self._unread(k, q)
-            self.n_read[k] += len(new)
+            new = self._take_unread(k, q)
             po, pl = self.opening[o][q]
             lines = [f"{self.w['Partner']}'s opening for query {self.number(k)}: "
                      + ("not submitted yet." if np.isnan(po)
                         else f"p = {po:g}, label {int(pl)}.")]
-            lines += [f'{self.w["Partner"]}: "{t}"' for t in new] or ["No new messages."]
+            lines += new or ["No new messages."]
             if self._submitted(o, q):
                 lines.append(f"{self.w['Your partner']} has submitted its final and is waiting for "
                              "yours.")
@@ -1163,6 +1206,11 @@ def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
         if not partner.endswith(last):
             raise ValueError("unexpected partner intro ending")
         partner = partner[: -len(last)] + BRIEF_START.format(cap=api.cap)
+    if api.notify:
+        head, sep, tail = partner.partition("\n\nAt any time during the queries")
+        if not sep:
+            raise ValueError("unexpected partner intro (no 'At any time during the queries')")
+        partner = head + NOTIFY_INTRO.format(who=api.w["your partner"]) + sep + tail
     return {"system": system, "solo": solo, "partner": partner}
 
 
