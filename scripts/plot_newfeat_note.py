@@ -4,8 +4,9 @@ Usage:
     python scripts/plot_newfeat_note.py --out <LogBook>/projects/agent-consensus/figures
 
 Reads results/boolean_haiku_newfeat and results/boolean_haiku_newfeat_atpartner (10 Haiku pairs
-each) and writes, with the numbers behind them (newfeat-note-numbers.json):
-  2026-11-19-newfeat-cases.png  share of finals saying 1 per case type, both arms
+each) and the control results/boolean_haiku_newfeat_full (5 pairs, all own features studied), and
+writes, with the numbers behind them (newfeat-note-numbers.json):
+  2026-11-19-newfeat-cases.png  share of finals saying 1 per case type, all three arms
   2026-11-19-newfeat-time.png   own new clause the only zero: share saying 1 per block of 20
 """
 
@@ -26,7 +27,9 @@ from newfeat_analysis import BLOCK, case_type, load  # noqa: E402
 
 from consensus.plotting_newfeat import plot_new_zero_over_time, plot_share_by_case  # noqa: E402
 
-ARMS = {"new at solo": "boolean_haiku_newfeat", "new at partner": "boolean_haiku_newfeat_atpartner"}
+# The control with every own feature studied (5 pairs) is the third series.
+ARMS = {"new at solo": "boolean_haiku_newfeat", "new at partner": "boolean_haiku_newfeat_atpartner",
+        "all studied": "boolean_haiku_newfeat_full"}
 CASES = [("own studied zero", "own studied clause is 0"),
          ("partner studied zero", "partner's studied clause is the only 0"),
          ("own new zero", "own new clause is the only 0"),

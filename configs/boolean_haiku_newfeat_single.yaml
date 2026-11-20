@@ -1,0 +1,31 @@
+# Single-agent control for configs/boolean_haiku_newfeat.yaml (Kanad, 2026-11-19): one agent sees
+# all eight features (a1..a4, b1..b4) of the same cases from the start: 400 study rows, then the
+# 100 solo cases and the 100 cases the pairs answered together, in one solo phase with a break.
+# Bayes accuracy: all eight features 0.901.
+experiment: boolean_haiku_newfeat_single
+seed: 0
+n_runs: 1
+single: true
+
+env:
+  task: boolean
+  clauses: [[0, 1], [2, 3], [4, 5], [6, 7]]
+  views: {A: [0, 1, 2, 3, 4, 5, 6, 7], B: [0, 1, 2, 3, 4, 5, 6, 7]}
+  r_within: 0.5
+  r_cross: 0.0
+  p_pi: 0.5
+  rho: 0.9
+
+n_train: 400
+K: 100
+T: 100
+
+agent:
+  model: claude-haiku-5-5
+  effort: low
+  labels: {A: [a1, a2, a3, a4, b1, b2, b3, b4]}
+  page_size: 400
+  cap: 40
+  max_chars: 2000
+  max_budget_usd: 3.0
+  max_continues: 10

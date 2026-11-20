@@ -50,7 +50,7 @@ def plot_share_by_case(rows: list[dict], arms: list[str]):
                for j, a in enumerate(arms)]
     handles.append(plt.Line2D([], [], marker="|", ls="", ms=12, mew=2, color=INK_2,
                               label="Bayes-optimal label"))
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3,
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2,
               frameon=False, fontsize=8.5)
     _style(ax)
     fig.tight_layout()
@@ -91,7 +91,7 @@ def plot_new_zero_over_time(curves: dict[str, list[float]], n_solo_blocks: int, 
     ax.grid(axis="y", color=GRID, lw=0.8)
     ax.set_axisbelow(True)
     ax.legend(frameon=False, fontsize=8.5, loc="upper center", bbox_to_anchor=(0.5, -0.32),
-              ncol=2)
+              ncol=len(curves))
     _style(ax)
     fig.tight_layout()
     return fig, ax
