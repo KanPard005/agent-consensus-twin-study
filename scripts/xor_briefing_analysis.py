@@ -32,6 +32,11 @@ TABLE = re.compile(r"\b[01]{3}\s*[:=≈~]")  # "000: 102/210", "011≈0.68"
 ROWS = re.compile(r"(\b[01],\s*[01],\s*[01],\s*[01]\b.*){5,}", re.S)  # pasted study rows
 EXCHANGE = re.compile(r"(share|send|exchange)\w*\s+(our |my |your |full )*(feature|triple|a1|b1)",
                       re.I)
+# A message that gives the sender's own feature values for the current case ("a1=0", "b=(0,1,1)",
+# "my a=010"), and one that asks what the other twin sees or which features it has.
+VALUES = re.compile(r"\b[ab][123]\s*=\s*[01]\b|\b[ab]\s*=\s*\(?[01],?\s*[01],?\s*[01]\)?")
+ASKS = re.compile(r"(what|which)\b[^.?]{0,40}\b(features?|variables?|inputs?|do you see|you see)|"
+                  r"your (features|variables|inputs)\b[^.]{0,30}\?", re.I)
 POOL = re.compile(r"\b(pool|joint|combined)\b.{0,40}\b(data|dataset|table|log|track)", re.I)
 
 
@@ -59,8 +64,12 @@ def pair_stats(d: Path, r: int) -> dict:
     recs = load_jsonl(tr / f"run{r}.jsonl")
     y = np.array([q["y"] for q in recs])
     fin = {k: np.array([q["final"][k] for q in recs]) for k in "AB"}
-    acc = np.mean([fin[k][:, 1] == y for k in "AB"], axis=0)  # per query, mean over twins
-    conf = np.mean([np.maximum(fin[k][:, 0], 1 - fin[k][:, 0]) for k in "AB"], axis=0)
+    # per query, mean over the twins that submitted a final (a twin whose session ended early
+    # leaves NaN finals; they are skipped, not counted as wrong)
+    ok = np.array([~np.isnan(fin[k][:, 1]) for k in "AB"])
+    hit = np.array([fin[k][:, 1] == y for k in "AB"])
+    acc = (hit & ok).sum(0) / ok.sum(0)
+    conf = np.nanmean([np.maximum(fin[k][:, 0], 1 - fin[k][:, 0]) for k in "AB"], axis=0)
     rule_q = next((q["number"] for q in recs for m in q["messages"] if RULE.search(m["text"])),
                   None)
     brief_p = tr / f"run{r}_brief.json"
@@ -72,6 +81,7 @@ def pair_stats(d: Path, r: int) -> dict:
                      and c["args"].get("values")} for k in "AB"}
     return {
         "dir": str(d), "run": r, "n": len(recs),
+        "missing_finals": {k: int((~ok[i]).sum()) for i, k in enumerate("AB")},
         "acc": float(acc.mean()), "acc_last20": float(acc[-20:].mean()),
         "conf": float(conf.mean()), "conf_last20": float(conf[-20:].mean()),
         "brief_messages": len(brief), "brief_chars": len(text),
@@ -94,6 +104,13 @@ def pair_stats(d: Path, r: int) -> dict:
         "count_joint": {k: sum(c["tool"] == "count" and c["args"].get("name") in with_vals[k]
                                for c in part[k]) for k in "AB"},
         "rule_query": rule_q,
+        # first partner query (displayed number) with own feature values in a message, and the
+        # first message (round = 0) that asks about the other twin's features
+        "values_query": next((q["number"] for q in recs for m in q["messages"]
+                              if VALUES.search(m["text"])), None),
+        "asks_features": next((0 for m in brief if ASKS.search(m["text"])), None)
+        or next((q["number"] for q in recs for m in q["messages"] if ASKS.search(m["text"])),
+                None),
     }
 
 
@@ -104,7 +121,9 @@ def main() -> None:
     args = p.parse_args()
     arms = {"none": (Path(args.baseline_root), "boolean_haiku_xor"),
             "brief": (ROOT / "results", "boolean_haiku_xor_brief"),
-            "announced": (ROOT / "results", "boolean_haiku_xor_brief_announced")}
+            "announced": (ROOT / "results", "boolean_haiku_xor_brief_announced"),
+            "other": (ROOT / "results", "boolean_haiku_xor_other"),
+            "other_round": (ROOT / "results", "boolean_haiku_xor_other_round")}
     out = {}
     for arm, (res, exp) in arms.items():
         rows = [pair_stats(d, r) for r, d in pair_dirs(res, exp)]

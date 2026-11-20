@@ -543,6 +543,6 @@ def plot_xor_briefing(arms: list[dict], bayes: float = 0.90):
     a2.set_xlim(1, arms[0]["T"])
     a2.set_xlabel("partner query")
     a2.set_ylabel("share of pairs still sending messages")
-    a2.legend(frameon=False, fontsize=8.5, loc="lower left", labelcolor=INK)
+    a2.legend(frameon=False, fontsize=8.5, loc="best", labelcolor=INK)
     fig.tight_layout()
     return fig
