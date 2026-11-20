@@ -111,6 +111,71 @@ BRIEF_START = ("Start the conversation with send_message or read_messages, and c
                "when you are done talking. You can make at most {cap} tool calls in this "
                "conversation, and at most {cap} per query.")
 
+# Minimal "other agent" framing (Kanad, 2026-11-19): after the solo queries the twin is told only
+# that there is another agent "which might or might not have information relevant to predicting
+# y", that it also predicts y and is scored on its own, and that they can communicate freely. It
+# is not told that the agent is the same model, which features it sees, or that the two work on
+# the same case (they do; the waiting in next_query is described without saying why). Nothing
+# says what to share or how to use it.
+OTHER_INTRO = """\
+You have finished studying ({n_train} labelled cases) and answering {K} queries on your own. From \
+now on there is another agent, agent {other}, which might or might not have information relevant \
+to predicting y. It also predicts y and is scored on its own predictions. You can communicate \
+freely with it.
+
+There are {T} more queries (queries {first} to {last}). For each one:
+- next_query gives you the features of the case (it waits until the other agent has also asked);
+- submit_opening(p, label) records your own probability that y = 1 and your label before you \
+communicate;
+- then you can communicate freely with the other agent: send_message sends a message, and \
+read_messages shows the other agent's opening and new messages (it waits until the other agent \
+sends something new, submits a prediction, or is also waiting);
+- when you are ready, submit_prediction(p, label) records your own final probability and label \
+(once per query). It waits until the other agent has also submitted its final; then you see both \
+finals and the true y of your case.
+You are scored on each query by {scoring_final}.
+
+At any time during the queries you can also use the data API. You can make at most {cap} tool \
+calls per query. Call next_query to begin."""
+
+# The opening round in the minimal framing, in Kanad's terms: "a free communication round first to
+# gather information and establish how to communicate".
+OTHER_BRIEF_INTRO = """
+
+Before the queries start, you and the other agent have one free communication round, to gather \
+information and to establish how you will communicate. send_message sends a message, and \
+read_messages shows the other agent's new messages (it waits until the other agent sends \
+something new, ends the round, or is also waiting). The round ends as soon as one of you calls \
+next_query, which starts the queries."""
+
+OTHER_BRIEF_START = ("Start the round with send_message or read_messages, and call next_query "
+                     "when you are done communicating. You can make at most {cap} tool calls in "
+                     "this round, and at most {cap} per query.")
+
+OTHER_DOCS = {
+    "submit_opening": ("Queries with the other agent: record your own probability p that y = 1 "
+                       "and your label (0 or 1) before you communicate."),
+    "send_message": "Send a message to the other agent.",
+    "read_messages": ("Show the other agent's new messages (and, during a query, its opening); "
+                      "waits until there is something new."),
+    "submit_prediction": ("Record your probability p that y = 1 and your label (0 or 1) for the "
+                          "current case (your final, during the queries with the other agent)."),
+}
+
+CONTINUE_OTHER = ("The run is not over yet. Continue working through the tools (next_query, "
+                  "submit_opening, communicating with the other agent, submit_prediction) until a "
+                  "tool result says the run is over.")
+
+# Wording of the tool results: the default ("partner", unchanged from earlier runs) and the
+# minimal framing, where the twin only knows there is "the other agent".
+WORDS = {
+    "partner": {"Partner": "Partner", "Your partner": "Your partner",
+                "your partner": "your partner", "pq": "partner query", "conv": "conversation"},
+    "other": {"Partner": "Other agent", "Your partner": "The other agent",
+              "your partner": "the other agent", "pq": "query with the other agent",
+              "conv": "round"},
+}
+
 SCORING = """\
 the log loss of your probability (minus the natural log of the probability you gave to the true \
 y, with p clipped to [0.001, 0.999]) and by whether your label is correct"""
@@ -348,7 +413,7 @@ class BooleanAPI:
                  info: dict | None = None, single: int | None = None,
                  no_training: bool = False, study_labels: dict | None = None,
                  new_at: str = "solo", briefing: bool = False,
-                 briefing_announced: bool = False) -> None:
+                 briefing_announced: bool = False, other_agent: bool = False) -> None:
         # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
         # which all run in the solo phase; after query K1 the agent gets `single_break`, after
         # query K the run is over. Only twin A acts.
@@ -386,6 +451,13 @@ class BooleanAPI:
         if self.briefing and (self.no_training or single):
             raise ValueError("briefing needs a pair with a study phase")
         self.brief_over = False
+        # Minimal "other agent" framing (Kanad, 2026-11-19): the partner is "the other agent",
+        # and the tool results use that wording too (`WORDS`).
+        self.other_agent = bool(other_agent)
+        if self.other_agent and (self.no_training or single or self.briefing_announced):
+            raise ValueError("other_agent needs a pair with a study phase, without "
+                             "briefing_announced")
+        self.w = WORDS["other" if self.other_agent else "partner"]
         self.phase = {k: "query" if self.no_training else "train" for k in "AB"}
         self.n_seen = {k: 0 for k in "AB"}
         self.solo_i = {k: -1 for k in "AB"}
@@ -707,7 +779,7 @@ class BooleanAPI:
             self.cond.wait_for(lambda: self.want[o] >= nq or self.q[o] >= nq or self.done(o))
             self.q[k], self.n_read[k] = nq, 0
             feats = ", ".join(f"{lab}={int(v)}" for lab, v in zip(self.labels[k], self.qx[k][nq]))
-            return (f"Query {self.K + nq + 1} (partner query {nq + 1} of {self.T}). Your "
+            return (f"Query {self.K + nq + 1} ({self.w['pq']} {nq + 1} of {self.T}). Your "
                     f"features: {feats}.")
 
     def _in_query(self, k: str) -> str | None:
@@ -736,8 +808,8 @@ class BooleanAPI:
     # ---- briefing conversation (no case; messages stored with q = -1) ------------------------
     def _brief_send(self, k: str, text: str) -> str:
         if self.brief_over:
-            return ("Error: your partner has ended the conversation; call next_query to start "
-                    "the queries.")
+            return (f"Error: {self.w['your partner']} has ended the {self.w['conv']}; call "
+                    "next_query to start the queries.")
         text = str(text)[: self.max_chars]
         self.inbox[self.other(k)].append((-1, text))
         self.messages.append({"q": -1, "from": k, "text": text, "order": len(self.messages),
@@ -760,12 +832,12 @@ class BooleanAPI:
         self.waiting[k] = None
         new = self._unread(k, -1)
         self.n_read[k] += len(new)
-        lines = [f'Partner: "{t}"' for t in new] or ["No new messages."]
+        lines = [f'{self.w["Partner"]}: "{t}"' for t in new] or ["No new messages."]
         if self.brief_over:
-            lines.append("Your partner has ended the conversation; call next_query to start the "
-                         "queries.")
+            lines.append(f"{self.w['Your partner']} has ended the {self.w['conv']}; call "
+                         "next_query to start the queries.")
         elif not new and self.waiting[o] == "read":
-            lines.append("Your partner is also waiting for a message.")
+            lines.append(f"{self.w['Your partner']} is also waiting for a message.")
         return "\n".join(lines)
 
     def send_message(self, k: str, text: str) -> str:
@@ -813,14 +885,15 @@ class BooleanAPI:
             new = self._unread(k, q)
             self.n_read[k] += len(new)
             po, pl = self.opening[o][q]
-            lines = [f"Partner's opening for query {self.number(k)}: "
+            lines = [f"{self.w['Partner']}'s opening for query {self.number(k)}: "
                      + ("not submitted yet." if np.isnan(po)
                         else f"p = {po:g}, label {int(pl)}.")]
-            lines += [f'Partner: "{t}"' for t in new] or ["No new messages."]
+            lines += [f'{self.w["Partner"]}: "{t}"' for t in new] or ["No new messages."]
             if self._submitted(o, q):
-                lines.append("Your partner has submitted its final and is waiting for yours.")
+                lines.append(f"{self.w['Your partner']} has submitted its final and is waiting for "
+                             "yours.")
             elif not new and self.waiting[o] == "read":
-                lines.append("Your partner is also waiting for a message.")
+                lines.append(f"{self.w['Your partner']} is also waiting for a message.")
             return "\n".join(lines)
 
     def submit_prediction(self, k: str, p, label) -> str:
@@ -855,12 +928,12 @@ class BooleanAPI:
                 self.cond.notify_all()
             y = int(self.y[q])
             pf, lf = self.final[o][q]
-            partner = ("your partner did not submit" if np.isnan(pf)
-                       else f"your partner's p = {pf:g}, label {int(lf)}")
+            partner = (f"{self.w['your partner']} did not submit" if np.isnan(pf)
+                       else f"{self.w['your partner']}'s p = {pf:g}, label {int(lf)}")
             res = (f"Both finals are in: yours p = {p:g}, label {int(label)}; {partner}. The true "
                    f"y was {y}. {_score(p, label, y, 'Your')}")
             if not np.isnan(pf):
-                res += " " + _score(pf, lf, y, "Your partner's")
+                res += " " + _score(pf, lf, y, f"{self.w['Your partner']}'s")
             return res + (" That was the last query: the run is over. Stop." if last
                           else " Call next_query for the next case.")
 
@@ -914,7 +987,12 @@ def build_tools(api: BooleanAPI, k: str):
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     docs = {n: d.format(page=api.page_size) for n, d in TOOL_DOCS.items()}
-    if api.briefing:  # the talk tools also work in the conversation before the partner queries
+    if api.other_agent:
+        docs.update(OTHER_DOCS)
+        if api.briefing:
+            docs["next_query"] = ("Get the features of the next case (after the communication "
+                                  "round, this ends the round).")
+    elif api.briefing:  # the talk tools also work in the conversation before the partner queries
         docs["send_message"] = ("Partner phase (the conversation before the partner queries, "
                                 "and the partner queries): send a message to your partner.")
         docs["read_messages"] = ("Partner phase (the conversation before the partner queries, "
@@ -1065,7 +1143,18 @@ def prompts(api: BooleanAPI, k: str) -> dict[str, str]:
         n_train="{n_train}", K=api.K, other=api.other(k), own=", ".join(labels),
         other_feats=", ".join(other), T=api.T, first=api.K + 1, last=api.K + api.T,
         cap=api.cap, scoring_final=scoring_final, new_features="" if in_solo else note)
-    if api.briefing:
+    if api.other_agent:
+        if new:
+            raise ValueError("study_labels is not supported with other_agent")
+        partner = OTHER_INTRO.format(n_train="{n_train}", K=api.K, other=api.other(k), T=api.T,
+                                     first=api.K + 1, last=api.K + api.T, cap=api.cap,
+                                     scoring_final=scoring_final)
+        if api.briefing:
+            head, sep, tail = partner.partition("\n\nThere are ")
+            partner = head + OTHER_BRIEF_INTRO + sep + tail
+            last = f"You can make at most {api.cap} tool calls per query. Call next_query to begin."
+            partner = partner[: -len(last)] + OTHER_BRIEF_START.format(cap=api.cap)
+    elif api.briefing:
         # The conversation goes right after the partner is introduced, and the closing line
         # ("Call next_query to begin.") says how to start and end it instead.
         head, sep, tail = partner.partition("\n\nThere are ")
@@ -1096,6 +1185,8 @@ class BooleanTwinSession(TwinSession):
                 api.single_break = p["break"]
         if api.single:
             self.continue_prompt = CONTINUE_SINGLE
+        elif api.other_agent:
+            self.continue_prompt = CONTINUE_OTHER
         self._init_run_state(live_dir, run)
 
     @property

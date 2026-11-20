@@ -415,3 +415,70 @@ def test_briefing_prompts_and_unchanged_baseline():
         assert "talk freely once" in p2["system"] and "talk freely once" not in p1["system"]
         assert p1["partner"] == p2["partner"]
         assert p1["partner"].endswith("at most 30 per query.")
+
+
+def make_other_api(briefing):
+    env = make_env()
+    rng = np.random.default_rng(2)
+    Xtr, _, ytr = env.sample(4, rng)
+    Xs, _, ys = env.sample(1, rng)
+    Xq, _, yq = env.sample(2, rng)
+    api = BooleanAPI({k: (env.view(Xtr, k), ytr) for k in "AB"},
+                     {"x": {k: env.view(Xs, k) for k in "AB"}, "y": ys},
+                     {k: env.view(Xq, k) for k in "AB"}, yq, LABELS, page_size=4, cap=30,
+                     briefing=briefing, other_agent=True)
+    for k in "AB":
+        pr = prompts(api, k)
+        api.solo_intro[k], api.partner_intro[k] = pr["solo"], pr["partner"]
+    return api
+
+
+@pytest.mark.parametrize("briefing", [False, True])
+def test_other_agent_prompt_says_only_what_it_should(briefing):
+    api = make_other_api(briefing)
+    for k in "AB":
+        text = prompts(api, k)["partner"]
+        assert "might or might not have information relevant" in text
+        low = text.lower()
+        for banned in ("partner", "same case", "same y", "same ai model", "features are"):
+            assert banned not in low, banned
+        for lab in LABELS[api.other(k)]:
+            assert lab not in text
+        assert ("communication round" in text) == briefing
+        assert prompts(api, k)["system"] == prompts(make_api(), k)["system"].replace(
+            "6 labelled", "4 labelled")
+
+
+def test_other_agent_results_use_neutral_wording():
+    api = make_other_api(True)
+    seen = []
+
+    def twin(k):
+        while not api.get_training_data(k, 4).startswith("You have seen all"):
+            pass
+        api.start_queries(k)
+        api.next_query(k)
+        seen.append(api.submit_prediction(k, 0.5, 1))
+        if k == "A":
+            api.send_message("A", "hello")
+            seen.append(api.read_messages("A"))
+            seen.append(api.next_query("A"))
+        else:
+            seen.append(api.read_messages("B"))
+            api.send_message("B", "hi")  # A's read waits for an answer
+            while not api.brief_over:
+                time.sleep(0.01)
+            seen.append(api.send_message("B", "x"))
+            seen.append(api.next_query("B"))
+        api.submit_opening(k, 0.5, 1)
+        seen.append(api.submit_prediction(k, 0.5, 1))
+
+    th = [threading.Thread(target=twin, args=(k,)) for k in "AB"]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(timeout=20)
+    joined = "\n".join(seen[2:])  # after the intro (which is checked above)
+    assert "partner" not in joined.lower()
+    assert 'Other agent: "hello"' in joined and "the other agent's p" in joined
+    assert "with the other agent" in joined and "ended the round" in joined

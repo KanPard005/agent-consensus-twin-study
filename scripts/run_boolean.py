@@ -78,6 +78,7 @@ def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
         no_training=no_training, study_labels=study_labels, new_at=new_at,
         briefing=bool(cfg.get("briefing")),
         briefing_announced=bool(cfg.get("briefing_announced")),
+        other_agent=bool(cfg.get("other_agent")),
     )
 
 
