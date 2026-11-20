@@ -12,6 +12,7 @@ Per run (pair) r the study cases, solo queries and partner queries come from the
   transcripts/run<r>_calls_<twin>.jsonl  every tool call and its result
   transcripts/run<r>_messages_<twin>.jsonl  the twin's text, thinking and tool uses
   transcripts/run<r>_brief.json          the conversation before the partner queries (`briefing`)
+  transcripts/run<r>_messages_all.json   every message, late ones included (`late_messages`)
 and summary.json at the end of each run.
 """
 
@@ -80,6 +81,7 @@ def pair_api(env: BooleanCopulaEnv, cfg: dict, train: tuple, solo: tuple,
         briefing_announced=bool(cfg.get("briefing_announced")),
         other_agent=bool(cfg.get("other_agent")),
         notify_messages=bool(cfg.get("notify_messages")),
+        late_messages=bool(cfg.get("late_messages")),
     )
 
 
@@ -189,6 +191,8 @@ def main(argv: list[str] | None = None) -> Path:
                                        max_continues=ag["max_continues"], live_dir=tr, run=r)
                  for k in ("A" if cfg.get("single") else "AB")}
         run_pair(api, twins)
+        if api.late:  # every message, including those sent after a query was resolved
+            (tr / f"run{r}_messages_all.json").write_text(json.dumps(api.messages, indent=2))
         if api.briefing:  # the conversation before the partner queries (messages with q = -1)
             (tr / f"run{r}_brief.json").write_text(json.dumps(
                 [m for m in api.messages if m["q"] == -1], indent=2))

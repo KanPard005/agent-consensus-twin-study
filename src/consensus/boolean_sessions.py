@@ -419,7 +419,7 @@ class BooleanAPI:
                  no_training: bool = False, study_labels: dict | None = None,
                  new_at: str = "solo", briefing: bool = False,
                  briefing_announced: bool = False, other_agent: bool = False,
-                 notify_messages: bool = False) -> None:
+                 notify_messages: bool = False, late_messages: bool = False) -> None:
         # Single-agent baseline: `single` = K1, the size of the first block of the K queries,
         # which all run in the solo phase; after query K1 the agent gets `single_break`, after
         # query K the run is over. Only twin A acts.
@@ -468,6 +468,13 @@ class BooleanAPI:
         # unread messages, and no message is lost when a query ends; the read pointer runs over
         # the whole inbox instead of restarting at each query.
         self.notify = bool(notify_messages)
+        # Late messages (Kanad, 2026-11-20): with notifications, a message sent after the query
+        # is resolved (or after the other twin has ended the round) is accepted and delivered
+        # instead of rejected; it is stored with "late": True. Together the two make the channel
+        # lossless.
+        self.late = bool(late_messages)
+        if self.late and not self.notify:
+            raise ValueError("late_messages needs notify_messages")
         self.phase = {k: "query" if self.no_training else "train" for k in "AB"}
         self.n_seen = {k: 0 for k in "AB"}
         self.solo_i = {k: -1 for k in "AB"}
@@ -820,7 +827,21 @@ class BooleanAPI:
             return f"Opening p = {float(p):g}, label {int(label)} recorded for query {self.number(k)}."
 
     # ---- briefing conversation (no case; messages stored with q = -1) ------------------------
+    def _post(self, k: str, q: int, text: str, late: bool = False) -> str:
+        """Put a message from twin k into the other twin's inbox (q = query index, -1 for the
+        briefing) and the message record."""
+        text = str(text)[: self.max_chars]
+        self.inbox[self.other(k)].append((q, text))
+        rec = {"q": q, "from": k, "text": text, "order": len(self.messages), "time": time.time()}
+        if late:
+            rec["late"] = True
+        self.messages.append(rec)
+        self.cond.notify_all()
+        return "Message sent."
+
     def _brief_send(self, k: str, text: str) -> str:
+        if self.brief_over and self.late:
+            return self._post(k, -1, text, late=True)
         if self.brief_over:
             return (f"Error: {self.w['your partner']} has ended the {self.w['conv']}; call "
                     "next_query to start the queries.")
@@ -857,6 +878,9 @@ class BooleanAPI:
         with self.cond:
             if self.phase[k] == "brief":
                 return self._brief_send(k, text)
+            if (self.late and self.phase[k] in ("query", "done") and self.q[k] >= 0
+                    and self.resolved[self.q[k]]):
+                return self._post(k, self.q[k], text, late=True)
             if err := self._in_query(k):
                 return err
             q = self.q[k]

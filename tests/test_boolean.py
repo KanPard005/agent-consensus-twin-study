@@ -548,3 +548,62 @@ def test_no_notifications_by_default():
     assert api.unread_note("A") == ""
     for k in "AB":
         assert "say so" not in prompts(api, k)["partner"]
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_late_messages_after_the_final(late):
+    """After query 1 is resolved, A sends a message before calling next_query. Without
+    late_messages it is rejected; with it, B is notified and reads it, marked with its query."""
+    env = make_env()
+    rng = np.random.default_rng(4)
+    Xtr, _, ytr = env.sample(4, rng)
+    Xq, _, yq = env.sample(2, rng)
+    api = BooleanAPI({k: (env.view(Xtr, k), ytr) for k in "AB"},
+                     {"x": {k: np.zeros((0, 3), int) for k in "AB"}, "y": np.zeros(0, int)},
+                     {k: env.view(Xq, k) for k in "AB"}, yq, LABELS, page_size=4, cap=30,
+                     other_agent=True, notify_messages=True, late_messages=late)
+    for k in "AB":
+        pr = prompts(api, k)
+        api.solo_intro[k], api.partner_intro[k] = pr["solo"], pr["partner"]
+    out, sent = {}, threading.Event()
+
+    def twin(k):
+        while not api.get_training_data(k, 4).startswith("You have seen all"):
+            pass
+        api.start_queries(k)
+        api.next_query(k)
+        api.submit_opening(k, 0.5, 1)
+        api.submit_prediction(k, 0.5, 1)
+        if k == "A":
+            out["send"] = api.send_message("A", "what are your b1,b2,b3?")
+            sent.set()
+        else:
+            sent.wait(5)
+        r = api.call(k, "next_query", {}, lambda: api.next_query(k))
+        api.submit_opening(k, 0.5, 1)
+        if k == "B":
+            out["next"] = r
+            out["read"] = api.read_messages("B")
+        api.submit_prediction(k, 0.5, 1)
+
+    th = [threading.Thread(target=twin, args=(k,)) for k in "AB"]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(timeout=20)
+    assert api.resolved.all()
+    if late:
+        assert out["send"] == "Message sent." and "Notification: 1 new message" in out["next"]
+        assert '(sent during query 1): "what are your b1,b2,b3?"' in out["read"]
+        assert api.messages[0]["late"] is True and api.messages[0]["q"] == 0
+    else:
+        assert out["send"].startswith("Error: this query is resolved")
+        assert not api.messages
+
+
+def test_late_messages_need_notifications():
+    with pytest.raises(ValueError):
+        BooleanAPI({k: (np.zeros((0, 3), int), np.zeros(0, int)) for k in "AB"},
+                   {"x": {k: np.zeros((0, 3), int) for k in "AB"}, "y": np.zeros(0, int)},
+                   {k: np.zeros((1, 3), int) for k in "AB"}, np.zeros(1, int), LABELS,
+                   late_messages=True)
